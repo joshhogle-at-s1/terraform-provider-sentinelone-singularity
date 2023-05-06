@@ -3,13 +3,12 @@ package datasources
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/validators"
 )
@@ -220,17 +219,84 @@ func (d *Packages) Read(ctx context.Context, req datasource.ReadRequest, resp *d
 		return
 	}
 
-	// query for the given package
-	_, diag := getPackages(ctx, d.client.APIClient, data)
-	if diag.HasError() {
-		resp.Diagnostics.Append(diag...)
-		return
+	// construct query parameters
+	queryParams := map[string]string{}
+	if data.Filter != nil {
+		queryParams = d.queryParamsFromFilter(*data.Filter)
 	}
+	queryParams["sortBy"] = "updatedAt"
+	queryParams["sortOrder"] = "desc"
+
 	//resp.Diagnostics.Append(resp.State.Set(ctx, pkgs)...)
 }
 
+// queryParamsFromFilter converts the TF filter block into API query parameters.
+func (d *Packages) queryParamsFromFilter(filter tfPackagesModelFilter) map[string]string {
+	queryParams := map[string]string{}
+
+	if len(filter.AccountIds) > 0 {
+		ids := []string{}
+		for _, acct := range filter.AccountIds {
+			if !acct.IsNull() && !acct.IsUnknown() {
+				ids = append(ids, acct.ValueString())
+			}
+		}
+		queryParams["accountIds"] = strings.Join(ids, ",")
+	}
+
+	if !filter.FileExtension.IsNull() && !filter.FileExtension.IsUnknown() {
+		queryParams["fileExtension"] = filter.FileExtension.ValueString()
+	}
+
+	/*
+		if !data.Id.IsNull() {
+			queryParams["ids"] = data.Id.ValueString()
+		}
+		if !data.MinorVersion.IsNull() {
+			queryParams["minorVersion"] = data.MinorVersion.ValueString()
+		}
+		if !data.OSArch.IsNull() {
+			queryParams["osArches"] = data.OSArch.ValueString()
+		}
+		if !data.OSType.IsNull() {
+			queryParams["osTypes"] = data.OSType.ValueString()
+		}
+		if !data.PackageType.IsNull() {
+			queryParams["packageTypes"] = data.PackageType.ValueString()
+		}
+		if !data.PlatformType.IsNull() {
+			queryParams["platformTypes"] = data.PlatformType.ValueString()
+		}
+		if !data.RangerVersion.IsNull() {
+			queryParams["rangerVersion"] = data.RangerVersion.ValueString()
+		}
+		if !data.SHA1.IsNull() {
+			queryParams["sha1"] = data.SHA1.ValueString()
+		}
+		if len(data.Sites) > 0 {
+			ids := []string{}
+			for _, site := range data.Sites {
+				if !site.Id.IsNull() {
+					ids = append(ids, site.Id.ValueString())
+				}
+			}
+			queryParams["siteIds"] = strings.Join(ids, ",")
+		}
+		if !data.Status.IsNull() {
+			queryParams["status"] = data.Status.ValueString()
+		}
+		if !data.Version.IsNull() {
+			queryParams["version"] = data.Version.ValueString()
+	*/
+	return queryParams
+}
+
+/*
 // getPackages retrieves multiple update packages from the server which match the given search criteria.
 func getPackages(ctx context.Context, client *api.Client, data tfPackagesModel) (*tfPackagesModel, diag.Diagnostics) {
+	/*
+	   // generate query parameters from data
+
 
 	// generate query parameters from data
 	//queryParams := queryParamFromTFData(data.Packages)
@@ -270,7 +336,7 @@ func getPackages(ctx context.Context, client *api.Client, data tfPackagesModel) 
 		for _, pkg := range pkgs {
 			tfpkgs.Packages = append(tfpkgs.Packages, *apiPackage2TFPackage(ctx, pkg))
 		}
-	*/
 
 	return nil, diag
 }
+*/

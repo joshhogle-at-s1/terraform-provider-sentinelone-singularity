@@ -4,14 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
 )
 
@@ -275,17 +272,43 @@ func (d *Package) Read(ctx context.Context, req datasource.ReadRequest, resp *da
 		return
 	}
 
-	// query for the given package
-	pkg, diag := getPackage(ctx, d.client.APIClient, data)
+	// construct query parameters
+	queryParams := map[string]string{
+		"ids": data.Id.ValueString(), // 'id' is required so no need to check
+	}
+
+	// find the matching package
+	result, diag := d.client.APIClient.Get(ctx, "/update/agent/packages", queryParams)
+	resp.Diagnostics.Append(diag...)
 	if diag.HasError() {
-		resp.Diagnostics.Append(diag...)
 		return
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, pkg)...)
-}
 
-// apiPackage2TFPackage converts an API package object to a Terrform package object.
-func apiPackage2TFPackage(ctx context.Context, pkg apiPackageModel) *tfPackageModel {
+	// parse the response - we are expecting exactly 1 package to be returned
+	numPkgs := result.Pagination.TotalItems
+	if numPkgs == 0 {
+		msg := "No matching package was found. Try expanding your search."
+		tflog.Error(ctx, msg, map[string]interface{}{"packages_found": numPkgs})
+		diag.AddError("API Query Failed", msg)
+		return
+	} else if numPkgs > 1 {
+		msg := fmt.Sprintf("This data source expects 1 matching package but %d were found. Please narrow your search.",
+			numPkgs)
+		tflog.Error(ctx, msg, map[string]interface{}{"packages_found": numPkgs})
+		diag.AddError("API Query Failed", msg)
+		return
+	}
+	var pkgs []apiPackageModel
+	if err := json.Unmarshal(result.Data, &pkgs); err != nil {
+		msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
+			"Package object.\n\nError: %s", err.Error())
+		tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
+		diag.AddError("API Query Failed", msg)
+		return
+	}
+
+	// convert the API object to the Terraform object
+	pkg := pkgs[0]
 	tfpkg := tfPackageModel{
 		CreatedAt:     types.StringValue(pkg.CreatedAt),
 		FileExtension: types.StringValue(pkg.FileExtension),
@@ -321,102 +344,5 @@ func apiPackage2TFPackage(ctx context.Context, pkg apiPackageModel) *tfPackageMo
 	tflog.Trace(ctx, fmt.Sprintf("converted API package to TF package: %+v", tfpkg), map[string]interface{}{
 		"api_package": pkg,
 	})
-	return &tfpkg
-}
-
-// getPackage retrieves an update package from the server.
-//
-// This function expects exactly 1 matching package to be found.
-func getPackage(ctx context.Context, client *api.Client, data tfPackageModel) (*tfPackageModel, diag.Diagnostics) {
-	// generate query parameters from data
-	queryParams := queryParamFromTFData(data)
-
-	// find the matching package
-	result, diag := client.Get(ctx, "/update/agent/packages", queryParams)
-	if diag.HasError() {
-		return nil, diag
-	}
-
-	// parse the response - we are expecting exactly 1 package to be returned
-	numPkgs := result.Pagination.TotalItems
-	if numPkgs == 0 {
-		msg := "No matching package was found. Try expanding your search."
-		tflog.Error(ctx, msg, map[string]interface{}{"packages_found": numPkgs})
-		diag.AddError("API Query Failed", msg)
-		return nil, diag
-	} else if numPkgs > 1 {
-		msg := fmt.Sprintf("This data source expects 1 matching package but %d were found. Please narrow your search.",
-			numPkgs)
-		tflog.Error(ctx, msg, map[string]interface{}{"packages_found": numPkgs})
-		diag.AddError("API Query Failed", msg)
-		return nil, diag
-	}
-	var pkgs []apiPackageModel
-	if err := json.Unmarshal(result.Data, &pkgs); err != nil {
-		msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
-			"Package object.\n\nError: %s", err.Error())
-		tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
-		diag.AddError("API Query Failed", msg)
-		return nil, diag
-	}
-
-	// convert the package into a Terraform object
-	return apiPackage2TFPackage(ctx, pkgs[0]), diag
-}
-
-// queryParamFromTFData returns API query parameters based on Terraform inputs.
-func queryParamFromTFData(data tfPackageModel) map[string]string {
-	queryParams := map[string]string{}
-	if len(data.Accounts) > 0 {
-		ids := []string{}
-		for _, acct := range data.Accounts {
-			if !acct.Id.IsNull() {
-				ids = append(ids, acct.Id.ValueString())
-			}
-		}
-		queryParams["accountIds"] = strings.Join(ids, ",")
-	}
-	if !data.FileExtension.IsNull() {
-		queryParams["fileExtension"] = data.FileExtension.ValueString()
-	}
-	if !data.Id.IsNull() {
-		queryParams["ids"] = data.Id.ValueString()
-	}
-	if !data.MinorVersion.IsNull() {
-		queryParams["minorVersion"] = data.MinorVersion.ValueString()
-	}
-	if !data.OSArch.IsNull() {
-		queryParams["osArches"] = data.OSArch.ValueString()
-	}
-	if !data.OSType.IsNull() {
-		queryParams["osTypes"] = data.OSType.ValueString()
-	}
-	if !data.PackageType.IsNull() {
-		queryParams["packageTypes"] = data.PackageType.ValueString()
-	}
-	if !data.PlatformType.IsNull() {
-		queryParams["platformTypes"] = data.PlatformType.ValueString()
-	}
-	if !data.RangerVersion.IsNull() {
-		queryParams["rangerVersion"] = data.RangerVersion.ValueString()
-	}
-	if !data.SHA1.IsNull() {
-		queryParams["sha1"] = data.SHA1.ValueString()
-	}
-	if len(data.Sites) > 0 {
-		ids := []string{}
-		for _, site := range data.Sites {
-			if !site.Id.IsNull() {
-				ids = append(ids, site.Id.ValueString())
-			}
-		}
-		queryParams["siteIds"] = strings.Join(ids, ",")
-	}
-	if !data.Status.IsNull() {
-		queryParams["status"] = data.Status.ValueString()
-	}
-	if !data.Version.IsNull() {
-		queryParams["version"] = data.Version.ValueString()
-	}
-	return queryParams
+	resp.Diagnostics.Append(resp.State.Set(ctx, pkg)...)
 }

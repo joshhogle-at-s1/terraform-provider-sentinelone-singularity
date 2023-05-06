@@ -21,7 +21,10 @@ var _ provider.Provider = &SingularityProvider{}
 
 // SingularityProviderModel describes the provider data model.
 type SingularityProviderModel struct {
-	ApiToken    types.String `tfsdk:"api_token"`
+	// ApiToken contains the API token used to interact with the REST API.
+	ApiToken types.String `tfsdk:"api_token"`
+
+	// ApiEndpoint contains the hostname used in the base URL for querying the REST API.
 	ApiEndpoint types.String `tfsdk:"api_endpoint"`
 }
 

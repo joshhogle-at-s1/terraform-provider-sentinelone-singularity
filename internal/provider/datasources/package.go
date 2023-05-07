@@ -280,7 +280,7 @@ func (d *Package) Read(ctx context.Context, req datasource.ReadRequest, resp *da
 	// find the matching package
 	result, diag := d.client.APIClient.Get(ctx, "/update/agent/packages", queryParams)
 	resp.Diagnostics.Append(diag...)
-	if diag.HasError() {
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -308,7 +308,12 @@ func (d *Package) Read(ctx context.Context, req datasource.ReadRequest, resp *da
 	}
 
 	// convert the API object to the Terraform object
-	pkg := pkgs[0]
+	tfpkg := terraformPackageFromAPI(ctx, pkgs[0])
+	resp.Diagnostics.Append(resp.State.Set(ctx, tfpkg)...)
+}
+
+// terraformPackageFromAPI converts and API package into a Terraform package.
+func terraformPackageFromAPI(ctx context.Context, pkg apiPackageModel) tfPackageModel {
 	tfpkg := tfPackageModel{
 		CreatedAt:     types.StringValue(pkg.CreatedAt),
 		FileExtension: types.StringValue(pkg.FileExtension),
@@ -344,5 +349,5 @@ func (d *Package) Read(ctx context.Context, req datasource.ReadRequest, resp *da
 	tflog.Trace(ctx, fmt.Sprintf("converted API package to TF package: %+v", tfpkg), map[string]interface{}{
 		"api_package": pkg,
 	})
-	resp.Diagnostics.Append(resp.State.Set(ctx, pkg)...)
+	return tfpkg
 }

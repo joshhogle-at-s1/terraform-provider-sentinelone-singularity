@@ -67,13 +67,37 @@ func (v enumStringList) ValidateList(ctx context.Context, req validator.ListRequ
 
 	for i, element := range req.ConfigValue.Elements() {
 		elementPath := req.Path.AtListIndex(i)
-		elementValue := element.String()
+
+		elementValuable, ok := element.(basetypes.StringValuable)
+		if !ok {
+			resp.Diagnostics.AddAttributeError(
+				req.Path,
+				"Invalid Validator for Element Value",
+				"While performing schema-based validation, an unexpected error occurred. "+
+					"The attribute declares a String values validator, however its values do not implement types.StringType "+
+					"or the types.StringTypable interface for custom String types. "+
+					"This is likely an issue with terraform-plugin-framework and should be reported to the provider "+
+					"developers.\n\n"+
+					fmt.Sprintf("Path: %s\n", req.Path.String())+
+					fmt.Sprintf("Element Type: %T\n", req.ConfigValue.ElementType(ctx))+
+					fmt.Sprintf("Element Value Type: %T\n", element),
+			)
+			return
+		}
+
+		elementValue, diag := elementValuable.ToStringValue(ctx)
+		resp.Diagnostics.Append(diag...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		e := elementValue.ValueString()
 		for _, val := range v.values {
 			if v.ignoreCase {
-				if strings.EqualFold(elementValue, val) {
+				if strings.EqualFold(e, val) {
 					return
 				}
-			} else if elementValue == val {
+			} else if e == val {
 				return
 			}
 		}

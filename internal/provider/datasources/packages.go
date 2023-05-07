@@ -2,6 +2,7 @@ package datasources
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/validators"
 )
@@ -21,10 +23,11 @@ var (
 
 // tfPackagesModel defines the Terraform model for packages.
 type tfPackagesModel struct {
-	PackageIds []types.String         `tfsdk:"ids"`
-	Filter     *tfPackagesModelFilter `tfsdk:"filter"`
+	Packages []tfPackageModel       `tfsdk:"packages"`
+	Filter   *tfPackagesModelFilter `tfsdk:"filter"`
 }
 
+// tfPackagesModelFilter defines the Terraform model for package filtering.
 type tfPackagesModelFilter struct {
 	AccountIds    []types.String `tfsdk:"account_ids"`
 	FileExtension types.String   `tfsdk:"file_extension"`
@@ -38,6 +41,8 @@ type tfPackagesModelFilter struct {
 	RangerVersion types.String   `tfsdk:"ranger_version"`
 	Sha1          types.String   `tfsdk:"sha1"`
 	SiteIds       []types.String `tfsdk:"site_ids"`
+	SortBy        types.String   `tfsdk:"sort_by"`
+	SortOrder     types.String   `tfsdk:"sort_order"`
 	Status        []types.String `tfsdk:"status"`
 	Version       types.String   `tfsdk:"version"`
 }
@@ -63,11 +68,142 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 		Description:         "This resource can be used for getting a list of package IDs based on filters.",
 		MarkdownDescription: "This resource can be used for getting a list of package IDs based on filters.",
 		Attributes: map[string]schema.Attribute{
-			"ids": schema.ListAttribute{
+			"packages": schema.ListNestedAttribute{
 				Description:         "List of matching package IDs that were found",
 				MarkdownDescription: "List of matching package IDs that were found",
 				Computed:            true,
-				ElementType:         types.StringType,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"accounts": schema.ListNestedAttribute{
+							Description:         "List of accounts to which the package belongs.",
+							MarkdownDescription: "List of accounts to which the package belongs.",
+							Computed:            true,
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"id": schema.StringAttribute{
+										Description:         "ID of the account.",
+										MarkdownDescription: "ID of the account.",
+										Computed:            true,
+									},
+									"name": schema.StringAttribute{
+										Description:         "Name of the account.",
+										MarkdownDescription: "Name of the account.",
+										Computed:            true,
+									},
+								},
+							},
+						},
+						"created_at": schema.StringAttribute{
+							Description:         "Date and time the package was created.",
+							MarkdownDescription: "Date and time the package was created.",
+							Computed:            true,
+						},
+						"file_extension": schema.StringAttribute{
+							Description:         "Extension of the package file.",
+							MarkdownDescription: "Extension of the package file.",
+							Computed:            true,
+						},
+						"file_name": schema.StringAttribute{
+							Description:         "Name of the package file",
+							MarkdownDescription: "Name of the package file",
+							Computed:            true,
+						},
+						"file_size": schema.Int64Attribute{
+							Description:         "Size of the package file.",
+							MarkdownDescription: "Size of the package file.",
+							Computed:            true,
+						},
+						"id": schema.StringAttribute{
+							Description:         "ID for the package.",
+							MarkdownDescription: "ID for the package.",
+							Computed:            true,
+						},
+						"link": schema.StringAttribute{
+							Description:         "Link to the package file download.",
+							MarkdownDescription: "Link to the package file download.",
+							Computed:            true,
+						},
+						"major_version": schema.StringAttribute{
+							Description:         "Major version of the package.",
+							MarkdownDescription: "Major version of the package.",
+							Computed:            true,
+						},
+						"minor_version": schema.StringAttribute{
+							Description:         "Minor version of the package.",
+							MarkdownDescription: "Minor version of the package.",
+							Computed:            true,
+						},
+						"os_arch": schema.StringAttribute{
+							Description:         "Architecture of OS on which the package runs.",
+							MarkdownDescription: "Architecture of OS on which the package runs.",
+							Computed:            true,
+						},
+						"os_type": schema.StringAttribute{
+							Description:         "Type of OS on which the package runs.",
+							MarkdownDescription: "Type of OS on which the package runs.",
+							Computed:            true,
+						},
+						"package_type": schema.StringAttribute{
+							Description:         "The type of packagee.",
+							MarkdownDescription: "The type of packagee.",
+							Computed:            true,
+						},
+						"platform_type": schema.StringAttribute{
+							Description:         "Platform on which the package runs.",
+							MarkdownDescription: "Platform on which the package runs.",
+							Computed:            true,
+						},
+						"ranger_version": schema.StringAttribute{
+							Description:         "Ranger version, if applicable.",
+							MarkdownDescription: "Ranger version, if applicable.",
+							Computed:            true,
+						},
+						"scope_level": schema.StringAttribute{
+							Description:         "Package scope.",
+							MarkdownDescription: "Package scope.",
+							Computed:            true,
+						},
+						"sha1": schema.StringAttribute{
+							Description:         "SHA1 hash of the package.",
+							MarkdownDescription: "SHA1 hash of the package.",
+							Computed:            true,
+						},
+						"sites": schema.ListNestedAttribute{
+							Description:         "List of sites to which the package belongs.",
+							MarkdownDescription: "List of sites to which the package belongs.",
+							Computed:            true,
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"id": schema.StringAttribute{
+										Description:         "ID of the site.",
+										MarkdownDescription: "ID of the site.",
+										Computed:            true,
+									},
+									"name": schema.StringAttribute{
+										Description:         "Name of the site.",
+										MarkdownDescription: "Name of the site.",
+										Computed:            true,
+									},
+								},
+							},
+						},
+						"status": schema.StringAttribute{
+							Description:         "Status of the package.",
+							MarkdownDescription: "Status of the package.",
+							Computed:            true,
+						},
+						"updated_at": schema.StringAttribute{
+							Description:         "Date and time the package was last updated.",
+							MarkdownDescription: "Date and time the package was last updated.",
+							Computed:            true,
+						},
+						"version": schema.StringAttribute{
+							Description:         "Version of the package.",
+							MarkdownDescription: "Version of the package.",
+							Computed:            true,
+						},
+					},
+				},
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -86,9 +222,9 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						MarkdownDescription: "File extension (eg: `.msi`).",
 						Optional:            true,
 						Validators: []validator.String{
-							validators.EnumStringValueOneOf(true,
+							validators.EnumStringValueOneOf(false,
 								".bsx", ".deb", ".exe", ".gz", ".img", ".msi",
-								".pkg", ".rpm", ".tar", ".xz", ".zip", "Unknown",
+								".pkg", ".rpm", ".tar", ".xz", ".zip", "unknown",
 							),
 						},
 					},
@@ -109,7 +245,7 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						Optional:            true,
 						ElementType:         types.StringType,
 						Validators: []validator.List{
-							validators.EnumStringListValuesAre(true,
+							validators.EnumStringListValuesAre(false,
 								"32 bit", "32/64 bit", "64 bit", "N/A",
 							),
 						},
@@ -120,8 +256,8 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						Optional:            true,
 						ElementType:         types.StringType,
 						Validators: []validator.List{
-							validators.EnumStringListValuesAre(true,
-								"Linux", "Linux_k8s", "Macos", "Sdk", "Windows", "Windows_legacy",
+							validators.EnumStringListValuesAre(false,
+								"linux", "linux_k8s", "macos", "sdk", "windows", "windows_legacy",
 							),
 						},
 					},
@@ -131,7 +267,7 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						Optional:            true,
 						ElementType:         types.StringType,
 						Validators: []validator.List{
-							validators.EnumStringListValuesAre(true,
+							validators.EnumStringListValuesAre(false,
 								"Agent", "AgentAndRanger", "Ranger",
 							),
 						},
@@ -142,8 +278,8 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						Optional:            true,
 						ElementType:         types.StringType,
 						Validators: []validator.List{
-							validators.EnumStringListValuesAre(true,
-								"Linux", "Linux_k8s", "Macos", "Sdk", "Windows", "Windows_legacy",
+							validators.EnumStringListValuesAre(false,
+								"linux", "linux_k8s", "macos", "sdk", "windows", "windows_legacy",
 							),
 						},
 					},
@@ -168,14 +304,36 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						Optional:            true,
 						ElementType:         types.StringType,
 					},
+					"sort_by": schema.StringAttribute{
+						Description:         "Field on which to sort results (eg: version).",
+						MarkdownDescription: "Field on which to sort results(eg: `version`).",
+						Optional:            true,
+						Validators: []validator.String{
+							validators.EnumStringValueOneOf(false,
+								"createdAt", "fileExtension", "fileName", "fileSize", "id", "link", "majorVersion",
+								"minorVersion", "osType", "packageType", "platformType", "rangerVersion", "scopeLevel",
+								"sha1", "status", "updatedAt", "version",
+							),
+						},
+					},
+					"sort_order": schema.StringAttribute{
+						Description:         "File extension (eg: .msi).",
+						MarkdownDescription: "File extension (eg: `.msi`).",
+						Optional:            true,
+						Validators: []validator.String{
+							validators.EnumStringValueOneOf(false,
+								"asc", "desc",
+							),
+						},
+					},
 					"status": schema.ListAttribute{
 						Description:         "Package status (eg: GA).",
 						MarkdownDescription: "Package status (eg: `GA`).",
 						Optional:            true,
 						ElementType:         types.StringType,
 						Validators: []validator.List{
-							validators.EnumStringListValuesAre(true,
-								"Beta", "EA", "GA", "Other",
+							validators.EnumStringListValuesAre(false,
+								"beta", "ea", "ga", "other",
 							),
 						},
 					},
@@ -224,10 +382,42 @@ func (d *Packages) Read(ctx context.Context, req datasource.ReadRequest, resp *d
 	if data.Filter != nil {
 		queryParams = d.queryParamsFromFilter(*data.Filter)
 	}
-	queryParams["sortBy"] = "updatedAt"
-	queryParams["sortOrder"] = "desc"
 
-	//resp.Diagnostics.Append(resp.State.Set(ctx, pkgs)...)
+	// find all matching packages querying for additional pages until results are exhausted
+	var pkgs []apiPackageModel
+	for {
+		// get a page of results
+		result, diag := d.client.APIClient.Get(ctx, "/update/agent/packages", queryParams)
+		resp.Diagnostics.Append(diag...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// parse the response
+		var page []apiPackageModel
+		if err := json.Unmarshal(result.Data, &page); err != nil {
+			msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
+				"Package object.\n\nError: %s", err.Error())
+			tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
+			resp.Diagnostics.AddError("API Query Failed", msg)
+			return
+		}
+		pkgs = append(pkgs, page...)
+
+		// get the next page of results until there is no next cursor
+		if result.Pagination.NextCursor == "" {
+			break
+		}
+		queryParams["cursor"] = result.Pagination.NextCursor
+	}
+
+	// convert API objects into Terraform objects
+	var tfpkgs tfPackagesModel
+	for _, pkg := range pkgs {
+		tfpkg := terraformPackageFromAPI(ctx, pkg)
+		tfpkgs.Packages = append(tfpkgs.Packages, tfpkg)
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, tfpkgs)...)
 }
 
 // queryParamsFromFilter converts the TF filter block into API query parameters.
@@ -235,108 +425,111 @@ func (d *Packages) queryParamsFromFilter(filter tfPackagesModelFilter) map[strin
 	queryParams := map[string]string{}
 
 	if len(filter.AccountIds) > 0 {
-		ids := []string{}
-		for _, acct := range filter.AccountIds {
-			if !acct.IsNull() && !acct.IsUnknown() {
-				ids = append(ids, acct.ValueString())
+		values := []string{}
+		for _, e := range filter.AccountIds {
+			if !e.IsNull() && !e.IsUnknown() {
+				values = append(values, e.ValueString())
 			}
 		}
-		queryParams["accountIds"] = strings.Join(ids, ",")
+		queryParams["accountIds"] = strings.Join(values, ",")
 	}
 
 	if !filter.FileExtension.IsNull() && !filter.FileExtension.IsUnknown() {
 		queryParams["fileExtension"] = filter.FileExtension.ValueString()
 	}
 
-	/*
-		if !data.Id.IsNull() {
-			queryParams["ids"] = data.Id.ValueString()
-		}
-		if !data.MinorVersion.IsNull() {
-			queryParams["minorVersion"] = data.MinorVersion.ValueString()
-		}
-		if !data.OSArch.IsNull() {
-			queryParams["osArches"] = data.OSArch.ValueString()
-		}
-		if !data.OSType.IsNull() {
-			queryParams["osTypes"] = data.OSType.ValueString()
-		}
-		if !data.PackageType.IsNull() {
-			queryParams["packageTypes"] = data.PackageType.ValueString()
-		}
-		if !data.PlatformType.IsNull() {
-			queryParams["platformTypes"] = data.PlatformType.ValueString()
-		}
-		if !data.RangerVersion.IsNull() {
-			queryParams["rangerVersion"] = data.RangerVersion.ValueString()
-		}
-		if !data.SHA1.IsNull() {
-			queryParams["sha1"] = data.SHA1.ValueString()
-		}
-		if len(data.Sites) > 0 {
-			ids := []string{}
-			for _, site := range data.Sites {
-				if !site.Id.IsNull() {
-					ids = append(ids, site.Id.ValueString())
-				}
+	if len(filter.Ids) > 0 {
+		values := []string{}
+		for _, e := range filter.Ids {
+			if !e.IsNull() && !e.IsUnknown() {
+				values = append(values, e.ValueString())
 			}
-			queryParams["siteIds"] = strings.Join(ids, ",")
 		}
-		if !data.Status.IsNull() {
-			queryParams["status"] = data.Status.ValueString()
+		queryParams["ids"] = strings.Join(values, ",")
+	}
+
+	if !filter.MinorVersion.IsNull() && !filter.MinorVersion.IsUnknown() {
+		queryParams["minorVersion"] = filter.MinorVersion.ValueString()
+	}
+
+	if len(filter.OSArches) > 0 {
+		values := []string{}
+		for _, e := range filter.OSArches {
+			if !e.IsNull() && !e.IsUnknown() {
+				values = append(values, e.ValueString())
+			}
 		}
-		if !data.Version.IsNull() {
-			queryParams["version"] = data.Version.ValueString()
-	*/
+		queryParams["osArches"] = strings.Join(values, ",")
+	}
+
+	if len(filter.OSTypes) > 0 {
+		values := []string{}
+		for _, e := range filter.OSTypes {
+			if !e.IsNull() && !e.IsUnknown() {
+				values = append(values, e.ValueString())
+			}
+		}
+		queryParams["osTypes"] = strings.Join(values, ",")
+	}
+
+	if len(filter.PackageTypes) > 0 {
+		values := []string{}
+		for _, e := range filter.PackageTypes {
+			if !e.IsNull() && !e.IsUnknown() {
+				values = append(values, e.ValueString())
+			}
+		}
+		queryParams["packageTypes"] = strings.Join(values, ",")
+	}
+
+	if len(filter.PlatformTypes) > 0 {
+		values := []string{}
+		for _, e := range filter.PlatformTypes {
+			if !e.IsNull() && !e.IsUnknown() {
+				values = append(values, e.ValueString())
+			}
+		}
+		queryParams["platformTypes"] = strings.Join(values, ",")
+	}
+
+	if !filter.RangerVersion.IsNull() && !filter.RangerVersion.IsUnknown() {
+		queryParams["rangerVersion"] = filter.RangerVersion.ValueString()
+	}
+
+	if !filter.Sha1.IsNull() && !filter.Sha1.IsUnknown() {
+		queryParams["sha1"] = filter.Sha1.ValueString()
+	}
+
+	if len(filter.SiteIds) > 0 {
+		values := []string{}
+		for _, e := range filter.SiteIds {
+			if !e.IsNull() && !e.IsUnknown() {
+				values = append(values, e.ValueString())
+			}
+		}
+		queryParams["siteIds"] = strings.Join(values, ",")
+	}
+
+	if !filter.SortBy.IsNull() && !filter.SortBy.IsUnknown() {
+		queryParams["sortBy"] = filter.SortBy.ValueString()
+	}
+
+	if !filter.SortOrder.IsNull() && !filter.SortOrder.IsUnknown() {
+		queryParams["sortOrder"] = filter.SortOrder.ValueString()
+	}
+
+	if len(filter.Status) > 0 {
+		values := []string{}
+		for _, e := range filter.Status {
+			if !e.IsNull() && !e.IsUnknown() {
+				values = append(values, e.ValueString())
+			}
+		}
+		queryParams["status"] = strings.Join(values, ",")
+	}
+
+	if !filter.Version.IsNull() && !filter.Version.IsUnknown() {
+		queryParams["version"] = filter.Version.ValueString()
+	}
 	return queryParams
 }
-
-/*
-// getPackages retrieves multiple update packages from the server which match the given search criteria.
-func getPackages(ctx context.Context, client *api.Client, data tfPackagesModel) (*tfPackagesModel, diag.Diagnostics) {
-	/*
-	   // generate query parameters from data
-
-
-	// generate query parameters from data
-	//queryParams := queryParamFromTFData(data.Packages)
-	//queryParams := map[string]string{}
-
-	// keep querying until we've exhausted all pages
-	var diag diag.Diagnostics
-	//var pkgs []apiPackageModel
-	/*
-		for {
-			// find the matching packages
-			result, diag := client.Get(ctx, "/update/agent/packages", queryParams)
-			if diag.HasError() {
-				return nil, diag
-			}
-
-			// parse the response
-			var page []apiPackageModel
-			if err := json.Unmarshal(result.Data, &page); err != nil {
-				msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
-					"Package object.\n\nError: %s", err.Error())
-				tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
-				diag.AddError("API Query Failed", msg)
-				return nil, diag
-			}
-			pkgs = append(pkgs, page...)
-
-			// get the next page of results until there is no next cursor
-			if result.Pagination.NextCursor == "" {
-				break
-			}
-			queryParams["cursor"] = result.Pagination.NextCursor
-		}
-
-		// convert the packages into a Terraform object
-		var tfpkgs tfPackagesModel
-		for _, pkg := range pkgs {
-			tfpkgs.Packages = append(tfpkgs.Packages, *apiPackage2TFPackage(ctx, pkg))
-		}
-
-	return nil, diag
-}
-*/

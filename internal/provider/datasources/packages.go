@@ -52,7 +52,7 @@ func NewPackages() datasource.DataSource {
 	return &Packages{}
 }
 
-// Packages is a data source used to store details about agent packages available on the server.
+// Packages is a data source used to store details about agent/updated packages.
 type Packages struct {
 	client *client.SingularityProvider
 }
@@ -73,136 +73,7 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 				MarkdownDescription: "List of matching package IDs that were found",
 				Computed:            true,
 				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"accounts": schema.ListNestedAttribute{
-							Description:         "List of accounts to which the package belongs.",
-							MarkdownDescription: "List of accounts to which the package belongs.",
-							Computed:            true,
-							NestedObject: schema.NestedAttributeObject{
-								Attributes: map[string]schema.Attribute{
-									"id": schema.StringAttribute{
-										Description:         "ID of the account.",
-										MarkdownDescription: "ID of the account.",
-										Computed:            true,
-									},
-									"name": schema.StringAttribute{
-										Description:         "Name of the account.",
-										MarkdownDescription: "Name of the account.",
-										Computed:            true,
-									},
-								},
-							},
-						},
-						"created_at": schema.StringAttribute{
-							Description:         "Date and time the package was created.",
-							MarkdownDescription: "Date and time the package was created.",
-							Computed:            true,
-						},
-						"file_extension": schema.StringAttribute{
-							Description:         "Extension of the package file.",
-							MarkdownDescription: "Extension of the package file.",
-							Computed:            true,
-						},
-						"file_name": schema.StringAttribute{
-							Description:         "Name of the package file",
-							MarkdownDescription: "Name of the package file",
-							Computed:            true,
-						},
-						"file_size": schema.Int64Attribute{
-							Description:         "Size of the package file.",
-							MarkdownDescription: "Size of the package file.",
-							Computed:            true,
-						},
-						"id": schema.StringAttribute{
-							Description:         "ID for the package.",
-							MarkdownDescription: "ID for the package.",
-							Computed:            true,
-						},
-						"link": schema.StringAttribute{
-							Description:         "Link to the package file download.",
-							MarkdownDescription: "Link to the package file download.",
-							Computed:            true,
-						},
-						"major_version": schema.StringAttribute{
-							Description:         "Major version of the package.",
-							MarkdownDescription: "Major version of the package.",
-							Computed:            true,
-						},
-						"minor_version": schema.StringAttribute{
-							Description:         "Minor version of the package.",
-							MarkdownDescription: "Minor version of the package.",
-							Computed:            true,
-						},
-						"os_arch": schema.StringAttribute{
-							Description:         "Architecture of OS on which the package runs.",
-							MarkdownDescription: "Architecture of OS on which the package runs.",
-							Computed:            true,
-						},
-						"os_type": schema.StringAttribute{
-							Description:         "Type of OS on which the package runs.",
-							MarkdownDescription: "Type of OS on which the package runs.",
-							Computed:            true,
-						},
-						"package_type": schema.StringAttribute{
-							Description:         "The type of packagee.",
-							MarkdownDescription: "The type of packagee.",
-							Computed:            true,
-						},
-						"platform_type": schema.StringAttribute{
-							Description:         "Platform on which the package runs.",
-							MarkdownDescription: "Platform on which the package runs.",
-							Computed:            true,
-						},
-						"ranger_version": schema.StringAttribute{
-							Description:         "Ranger version, if applicable.",
-							MarkdownDescription: "Ranger version, if applicable.",
-							Computed:            true,
-						},
-						"scope_level": schema.StringAttribute{
-							Description:         "Package scope.",
-							MarkdownDescription: "Package scope.",
-							Computed:            true,
-						},
-						"sha1": schema.StringAttribute{
-							Description:         "SHA1 hash of the package.",
-							MarkdownDescription: "SHA1 hash of the package.",
-							Computed:            true,
-						},
-						"sites": schema.ListNestedAttribute{
-							Description:         "List of sites to which the package belongs.",
-							MarkdownDescription: "List of sites to which the package belongs.",
-							Computed:            true,
-							NestedObject: schema.NestedAttributeObject{
-								Attributes: map[string]schema.Attribute{
-									"id": schema.StringAttribute{
-										Description:         "ID of the site.",
-										MarkdownDescription: "ID of the site.",
-										Computed:            true,
-									},
-									"name": schema.StringAttribute{
-										Description:         "Name of the site.",
-										MarkdownDescription: "Name of the site.",
-										Computed:            true,
-									},
-								},
-							},
-						},
-						"status": schema.StringAttribute{
-							Description:         "Status of the package.",
-							MarkdownDescription: "Status of the package.",
-							Computed:            true,
-						},
-						"updated_at": schema.StringAttribute{
-							Description:         "Date and time the package was last updated.",
-							MarkdownDescription: "Date and time the package was last updated.",
-							Computed:            true,
-						},
-						"version": schema.StringAttribute{
-							Description:         "Version of the package.",
-							MarkdownDescription: "Version of the package.",
-							Computed:            true,
-						},
-					},
+					Attributes: getPackageSchema(ctx).Attributes,
 				},
 			},
 		},

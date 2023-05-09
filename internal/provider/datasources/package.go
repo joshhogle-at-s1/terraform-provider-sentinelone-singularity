@@ -95,7 +95,7 @@ func NewPackage() datasource.DataSource {
 	return &Package{}
 }
 
-// Package is a data source used to store details about an single package available on the server.
+// Package is a data source used to store details about a single agent/update package.
 type Package struct {
 	client *client.SingularityProvider
 }
@@ -107,7 +107,88 @@ func (d *Package) Metadata(ctx context.Context, req datasource.MetadataRequest, 
 
 // Schema defines the parameters for the data sources's configuration.
 func (d *Package) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	resp.Schema = schema.Schema{
+	pkgSchema := getPackageSchema(ctx)
+
+	// override the default schema
+	pkgSchema.Attributes["id"] = schema.StringAttribute{
+		Description:         "ID for the package.",
+		MarkdownDescription: "ID for the package.",
+		Required:            true,
+	}
+	resp.Schema = pkgSchema
+}
+
+// Configure initializes the configuration for the data source.
+func (d *Package) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+	// Prevent panic if the provider has not been configured.
+	if req.ProviderData == nil {
+		return
+	}
+
+	client, ok := req.ProviderData.(*client.SingularityProvider)
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Unexpected Data Type",
+			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider developers.",
+				req.ProviderData),
+		)
+		return
+	}
+	d.client = client
+}
+
+// Read retrieves data from the API.
+func (d *Package) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var data tfPackageModel
+
+	// read configuration data into the model
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// construct query parameters
+	queryParams := map[string]string{
+		"ids": data.Id.ValueString(), // 'id' is required so no need to check
+	}
+
+	// find the matching package
+	result, diag := d.client.APIClient.Get(ctx, "/update/agent/packages", queryParams)
+	resp.Diagnostics.Append(diag...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// parse the response - we are expecting exactly 1 package to be returned
+	numPkgs := result.Pagination.TotalItems
+	if numPkgs == 0 {
+		msg := "No matching package was found. Try expanding your search or check that your package ID is valid."
+		tflog.Error(ctx, msg, map[string]interface{}{"packages_found": numPkgs})
+		resp.Diagnostics.AddError("API Query Failed", msg)
+		return
+	} else if numPkgs > 1 {
+		msg := fmt.Sprintf("This data source expects 1 matching package but %d were found. Please narrow your search.",
+			numPkgs)
+		tflog.Error(ctx, msg, map[string]interface{}{"packages_found": numPkgs})
+		resp.Diagnostics.AddError("API Query Failed", msg)
+		return
+	}
+	var pkgs []apiPackageModel
+	if err := json.Unmarshal(result.Data, &pkgs); err != nil {
+		msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
+			"Package object.\n\nError: %s", err.Error())
+		tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
+		resp.Diagnostics.AddError("API Query Failed", msg)
+		return
+	}
+
+	// convert the API object to the Terraform object
+	resp.Diagnostics.Append(resp.State.Set(ctx, terraformPackageFromAPI(ctx, pkgs[0]))...)
+}
+
+// getPackageSchema returns a default Terraform schema where all values are computed.
+func getPackageSchema(ctx context.Context) schema.Schema {
+	return schema.Schema{
 		Description:         "This data source is used for getting details on a specific package.",
 		MarkdownDescription: "This data source is used for getting details on a specific package.",
 		Attributes: map[string]schema.Attribute{
@@ -131,8 +212,8 @@ func (d *Package) Schema(ctx context.Context, req datasource.SchemaRequest, resp
 				},
 			},
 			"created_at": schema.StringAttribute{
-				Description:         "Date and time the package was created.",
-				MarkdownDescription: "Date and time the package was created.",
+				Description:         "Timestamp of when the package was created.",
+				MarkdownDescription: "Timestamp of when the package was created.",
 				Computed:            true,
 			},
 			"file_extension": schema.StringAttribute{
@@ -153,7 +234,7 @@ func (d *Package) Schema(ctx context.Context, req datasource.SchemaRequest, resp
 			"id": schema.StringAttribute{
 				Description:         "ID for the package.",
 				MarkdownDescription: "ID for the package.",
-				Required:            true,
+				Computed:            true,
 			},
 			"link": schema.StringAttribute{
 				Description:         "Link to the package file download.",
@@ -230,8 +311,8 @@ func (d *Package) Schema(ctx context.Context, req datasource.SchemaRequest, resp
 				Computed:            true,
 			},
 			"updated_at": schema.StringAttribute{
-				Description:         "Date and time the package was last updated.",
-				MarkdownDescription: "Date and time the package was last updated.",
+				Description:         "Timestamp of when the package was last updated.",
+				MarkdownDescription: "Timestamp of when the package was last updated.",
 				Computed:            true,
 			},
 			"version": schema.StringAttribute{
@@ -243,78 +324,10 @@ func (d *Package) Schema(ctx context.Context, req datasource.SchemaRequest, resp
 	}
 }
 
-// Configure initializes the configuration for the data source.
-func (d *Package) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
-	if req.ProviderData == nil {
-		return
-	}
-
-	client, ok := req.ProviderData.(*client.SingularityProvider)
-	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Data Type",
-			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider developers.",
-				req.ProviderData),
-		)
-		return
-	}
-	d.client = client
-}
-
-// Read retrieves data from the API.
-func (d *Package) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data tfPackageModel
-
-	// read configuration data into the model
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// construct query parameters
-	queryParams := map[string]string{
-		"ids": data.Id.ValueString(), // 'id' is required so no need to check
-	}
-
-	// find the matching package
-	result, diag := d.client.APIClient.Get(ctx, "/update/agent/packages", queryParams)
-	resp.Diagnostics.Append(diag...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// parse the response - we are expecting exactly 1 package to be returned
-	numPkgs := result.Pagination.TotalItems
-	if numPkgs == 0 {
-		msg := "No matching package was found. Try expanding your search."
-		tflog.Error(ctx, msg, map[string]interface{}{"packages_found": numPkgs})
-		diag.AddError("API Query Failed", msg)
-		return
-	} else if numPkgs > 1 {
-		msg := fmt.Sprintf("This data source expects 1 matching package but %d were found. Please narrow your search.",
-			numPkgs)
-		tflog.Error(ctx, msg, map[string]interface{}{"packages_found": numPkgs})
-		diag.AddError("API Query Failed", msg)
-		return
-	}
-	var pkgs []apiPackageModel
-	if err := json.Unmarshal(result.Data, &pkgs); err != nil {
-		msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
-			"Package object.\n\nError: %s", err.Error())
-		tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
-		diag.AddError("API Query Failed", msg)
-		return
-	}
-
-	// convert the API object to the Terraform object
-	tfpkg := terraformPackageFromAPI(ctx, pkgs[0])
-	resp.Diagnostics.Append(resp.State.Set(ctx, tfpkg)...)
-}
-
-// terraformPackageFromAPI converts and API package into a Terraform package.
+// terraformPackageFromAPI converts an API package into a Terraform package.
 func terraformPackageFromAPI(ctx context.Context, pkg apiPackageModel) tfPackageModel {
 	tfpkg := tfPackageModel{
+		Accounts:      []tfPackageAccountModel{},
 		CreatedAt:     types.StringValue(pkg.CreatedAt),
 		FileExtension: types.StringValue(pkg.FileExtension),
 		FileName:      types.StringValue(pkg.FileName),
@@ -330,6 +343,7 @@ func terraformPackageFromAPI(ctx context.Context, pkg apiPackageModel) tfPackage
 		RangerVersion: types.StringValue(pkg.RangerVersion),
 		ScopeLevel:    types.StringValue(pkg.ScopeLevel),
 		SHA1:          types.StringValue(pkg.SHA1),
+		Sites:         []tfPackageSiteModel{},
 		Status:        types.StringValue(pkg.Status),
 		UpdatedAt:     types.StringValue(pkg.UpdatedAt),
 		Version:       types.StringValue(pkg.Version),

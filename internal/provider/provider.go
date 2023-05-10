@@ -108,9 +108,11 @@ func (p *SingularityProvider) Configure(ctx context.Context, req provider.Config
 func (p *SingularityProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		datasources.NewGroup,
+		datasources.NewGroups,
 		datasources.NewPackage,
 		datasources.NewPackages,
 		datasources.NewSite,
+		datasources.NewSites,
 	}
 }
 

@@ -12,30 +12,30 @@ provider "singularity" {
   #api_endpoint = ""    # set SINGULARITY_API_ENDPOINT environment variable instead
 }
 
+
+data "singularity_sites" "dest" {
+  filter {
+    is_default = true
+    states     = ["active"]
+  }
+}
+
 data "singularity_packages" "k8s" {
   filter {
     file_extension = ".gz"
     platform_types = ["linux_k8s"]
+    site_ids       = [data.singularity_sites.dest.sites[0].id]
     sort_by        = "version"
     sort_order     = "desc"
   }
 }
 
-/*
-data "singularity_sites" "dest" {
-  filter {
-    is_default = true
-    state = "active"
-  }
-}
-
 data "singularity_groups" "dest" {
   filter {
-    name = "Ashburn Datacenter"
-    site_id = data.singularity_sites.dest.sites[0]
+    site_ids   = [data.singularity_sites.dest.sites[0].id]
+    is_default = true
   }
 }
-*/
 
 /*
 resource "singularity_package_download" "k8s_agent" {

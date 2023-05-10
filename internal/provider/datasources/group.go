@@ -97,8 +97,8 @@ func (d *Group) Configure(ctx context.Context, req datasource.ConfigureRequest, 
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Type",
-			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider developers.",
-				req.ProviderData),
+			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider "+
+				"developers.", req.ProviderData),
 		)
 		return
 	}

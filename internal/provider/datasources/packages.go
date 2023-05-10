@@ -47,12 +47,12 @@ type tfPackagesModelFilter struct {
 	Version       types.String   `tfsdk:"version"`
 }
 
-// NewPackage creates a new Packages object.
+// NewPackages creates a new Packages object.
 func NewPackages() datasource.DataSource {
 	return &Packages{}
 }
 
-// Packages is a data source used to store details about agent/updated packages.
+// Packages is a data source used to store details about agent/update packages.
 type Packages struct {
 	client *client.SingularityProvider
 }
@@ -65,12 +65,15 @@ func (d *Packages) Metadata(ctx context.Context, req datasource.MetadataRequest,
 // Schema defines the parameters for the data sources's configuration.
 func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description:         "This resource can be used for getting a list of package IDs based on filters.",
-		MarkdownDescription: "This resource can be used for getting a list of package IDs based on filters.",
+		Description: "This data source can be used for getting a list of packages based on filters.",
+		MarkdownDescription: `This data source can be used for getting a list of packages based on filters.
+
+		TODO: add more of a description on how to use this data source...
+		`,
 		Attributes: map[string]schema.Attribute{
 			"packages": schema.ListNestedAttribute{
-				Description:         "List of matching package IDs that were found",
-				MarkdownDescription: "List of matching package IDs that were found",
+				Description:         "List of matching packages that were found.",
+				MarkdownDescription: "List of matching packages that were found.",
 				Computed:            true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: getPackageSchema(ctx).Attributes,
@@ -89,9 +92,11 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						ElementType:         types.StringType,
 					},
 					"file_extension": schema.StringAttribute{
-						Description:         "File extension (eg: .msi).",
-						MarkdownDescription: "File extension (eg: `.msi`).",
-						Optional:            true,
+						Description: "File extension (valid values: .bsx, .deb, .exe, .gz, .img, .msi, .pkg, .rpm, .tar " +
+							".xz, .zip, unknown).",
+						MarkdownDescription: "File extension (valid values: `.bsx`, `.deb`, `.exe`, `.gz`, `.img`, `.msi`, " +
+							"`.pkg`, `.rpm`, `.tar` `.xz`, `.zip`, `unknown`).",
+						Optional: true,
 						Validators: []validator.String{
 							validators.EnumStringValueOneOf(false,
 								".bsx", ".deb", ".exe", ".gz", ".img", ".msi",
@@ -111,10 +116,12 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						Optional:            true,
 					},
 					"os_arches": schema.ListAttribute{
-						Description:         "Package OS architecture, applicable to Windows packages only (eg: 32-bit).",
-						MarkdownDescription: "Package OS architecture, applicable to Windows packages only (eg: `32-bit`).",
-						Optional:            true,
-						ElementType:         types.StringType,
+						Description: "Package OS architecture, applicable to Windows packages only " +
+							"(valid values: 32 bit, 32/64 bit, 64 bit, N/A).",
+						MarkdownDescription: "Package OS architecture, applicable to Windows packages only " +
+							"(valid values: `32 bit`, `32/64 bit`, `64 bit`, `N/A`).",
+						Optional:    true,
+						ElementType: types.StringType,
 						Validators: []validator.List{
 							validators.EnumStringListValuesAre(false,
 								"32 bit", "32/64 bit", "64 bit", "N/A",
@@ -122,10 +129,12 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						},
 					},
 					"os_types": schema.ListAttribute{
-						Description:         "Package OS type (eg: macos).",
-						MarkdownDescription: "Package OS type (eg: `macos`).",
-						Optional:            true,
-						ElementType:         types.StringType,
+						Description: "Package OS type (valid values: linux, linux_k8s, macos, sdk, windows, " +
+							"windows_legacy).",
+						MarkdownDescription: "Package OS type (valid values: `linux`, `linux_k8s`, `macos`, `sdk` " +
+							"`windows`, `windows_legacy`).",
+						Optional:    true,
+						ElementType: types.StringType,
 						Validators: []validator.List{
 							validators.EnumStringListValuesAre(false,
 								"linux", "linux_k8s", "macos", "sdk", "windows", "windows_legacy",
@@ -133,8 +142,8 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						},
 					},
 					"package_types": schema.ListAttribute{
-						Description:         "Package type (eg: agent).",
-						MarkdownDescription: "Package type (eg: `agent`).",
+						Description:         "Package type (valid values: Agent, AgentAndRanger, Ranger).",
+						MarkdownDescription: "Package type (valid values: `Agent`, `AgentAndRanger`, `Ranger`).",
 						Optional:            true,
 						ElementType:         types.StringType,
 						Validators: []validator.List{
@@ -144,10 +153,12 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						},
 					},
 					"platform_types": schema.ListAttribute{
-						Description:         "Package platform (eg: macos).",
-						MarkdownDescription: "Package platform (eg: `macos`).",
-						Optional:            true,
-						ElementType:         types.StringType,
+						Description: "Package platform (valid values: linux, linux_k8s, macos, sdk, windows, " +
+							"windows_legacy).",
+						MarkdownDescription: "Package platform (valid values: `linux`, `linux_k8s`, `macos`, `sdk` " +
+							"`windows`, `windows_legacy`).",
+						Optional:    true,
+						ElementType: types.StringType,
 						Validators: []validator.List{
 							validators.EnumStringListValuesAre(false,
 								"linux", "linux_k8s", "macos", "sdk", "windows", "windows_legacy",
@@ -176,20 +187,24 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						ElementType:         types.StringType,
 					},
 					"sort_by": schema.StringAttribute{
-						Description:         "Field on which to sort results (eg: version).",
-						MarkdownDescription: "Field on which to sort results(eg: `version`).",
-						Optional:            true,
+						Description: "Field on which to sort results (valid values: createdAt, fileExtension, fileName, " +
+							"fileSize, id, majorVersion, minorVersion, osType, packageType, platformType, rangerVersion, " +
+							"scopeLevel, sha1, status, updatedAt, version).",
+						MarkdownDescription: "Field on which to sort results (valid values: `createdAt`, `fileExtension`, " +
+							"`fileName`, `fileSize`, `id`, `majorVersion`, `minorVersion`, `osType`, `packageType`, " +
+							"`platformType`, `rangerVersion`, `scopeLevel`, `sha1`, `status`, `updatedAt`, `version`).",
+						Optional: true,
 						Validators: []validator.String{
 							validators.EnumStringValueOneOf(false,
-								"createdAt", "fileExtension", "fileName", "fileSize", "id", "link", "majorVersion",
+								"createdAt", "fileExtension", "fileName", "fileSize", "id", "majorVersion",
 								"minorVersion", "osType", "packageType", "platformType", "rangerVersion", "scopeLevel",
 								"sha1", "status", "updatedAt", "version",
 							),
 						},
 					},
 					"sort_order": schema.StringAttribute{
-						Description:         "File extension (eg: .msi).",
-						MarkdownDescription: "File extension (eg: `.msi`).",
+						Description:         "Order in which to sort results (valid values: asc, desc).",
+						MarkdownDescription: "Order in which to sort results (valid values: `asc`, `desc`).",
 						Optional:            true,
 						Validators: []validator.String{
 							validators.EnumStringValueOneOf(false,
@@ -198,8 +213,8 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 						},
 					},
 					"status": schema.ListAttribute{
-						Description:         "Package status (eg: GA).",
-						MarkdownDescription: "Package status (eg: `GA`).",
+						Description:         "Package status (valid values: beta, ea, ga, other).",
+						MarkdownDescription: "Package status (valid values: `beta`, `ea`, `ga`, `other`).",
 						Optional:            true,
 						ElementType:         types.StringType,
 						Validators: []validator.List{
@@ -230,8 +245,8 @@ func (d *Packages) Configure(ctx context.Context, req datasource.ConfigureReques
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Type",
-			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider developers.",
-				req.ProviderData),
+			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider "+
+				"developers.", req.ProviderData),
 		)
 		return
 	}
@@ -283,10 +298,12 @@ func (d *Packages) Read(ctx context.Context, req datasource.ReadRequest, resp *d
 	}
 
 	// convert API objects into Terraform objects
-	var tfpkgs tfPackagesModel
+	tfpkgs := tfPackagesModel{
+		Filter:   data.Filter,
+		Packages: []tfPackageModel{},
+	}
 	for _, pkg := range pkgs {
-		tfpkg := terraformPackageFromAPI(ctx, pkg)
-		tfpkgs.Packages = append(tfpkgs.Packages, tfpkg)
+		tfpkgs.Packages = append(tfpkgs.Packages, terraformPackageFromAPI(ctx, pkg))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, tfpkgs)...)
 }

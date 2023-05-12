@@ -7,6 +7,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
 )
 
 // ensure implementation satisfied expected interfaces.
@@ -51,17 +53,20 @@ func (v enumStringList) ValidateList(ctx context.Context, req validator.ListRequ
 
 	_, ok := req.ConfigValue.ElementType(ctx).(basetypes.StringTypable)
 	if !ok {
-		resp.Diagnostics.AddAttributeError(
-			req.Path,
-			"Invalid Validator for Element Type",
+		// this should *never* happen - but we want to be sure
+		msg := fmt.Sprintf(
 			"While performing schema-based validation, an unexpected error occurred. "+
-				"The attribute declares a String values validator, however its values do not implement types.StringType or "+
-				"the types.StringTypable interface for custom String types. "+
-				"Use the appropriate values validator that matches the element type. "+
+				"The attribute declares a String values validator, however its values do not implement types.StringType "+
+				"or the types.StringTypable interface for custom String types. "+
 				"This is always an issue with the provider and should be reported to the provider developers.\n\n"+
-				fmt.Sprintf("Path: %s\n", req.Path.String())+
-				fmt.Sprintf("Element Type: %T\n", req.ConfigValue.ElementType(ctx)),
+				"Path: %s\nElement Type: %T", req.Path.String(), req.ConfigValue.ElementType(ctx),
 		)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"internal_error_code": plugin.ERR_VALIDATOR_ENUM_STRINGLIST,
+			"path":                req.Path.String(),
+			"element_type":        fmt.Sprintf("%T", req.ConfigValue.ElementType(ctx)),
+		})
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Validator for Element Type", msg)
 		return
 	}
 
@@ -70,18 +75,22 @@ func (v enumStringList) ValidateList(ctx context.Context, req validator.ListRequ
 
 		elementValuable, ok := element.(basetypes.StringValuable)
 		if !ok {
-			resp.Diagnostics.AddAttributeError(
-				req.Path,
-				"Invalid Validator for Element Value",
+			// this should *never* happen - but we want to be sure
+			msg := fmt.Sprintf(
 				"While performing schema-based validation, an unexpected error occurred. "+
 					"The attribute declares a String values validator, however its values do not implement types.StringType "+
 					"or the types.StringTypable interface for custom String types. "+
 					"This is likely an issue with terraform-plugin-framework and should be reported to the provider "+
-					"developers.\n\n"+
-					fmt.Sprintf("Path: %s\n", req.Path.String())+
-					fmt.Sprintf("Element Type: %T\n", req.ConfigValue.ElementType(ctx))+
-					fmt.Sprintf("Element Value Type: %T\n", element),
+					"developers.\n\nPath: %s\nElement Type: %T\nElement Value Type: %T",
+				req.Path.String(), req.ConfigValue.ElementType(ctx), element,
 			)
+			tflog.Error(ctx, msg, map[string]interface{}{
+				"internal_error_code": plugin.ERR_VALIDATOR_ENUM_STRINGLIST,
+				"path":                req.Path.String(),
+				"element_type":        fmt.Sprintf("%T", req.ConfigValue.ElementType(ctx)),
+				"element_value_type":  fmt.Sprintf("%T", element),
+			})
+			resp.Diagnostics.AddAttributeError(req.Path, "Invalid Validator for Element Value", msg)
 			return
 		}
 
@@ -101,10 +110,13 @@ func (v enumStringList) ValidateList(ctx context.Context, req validator.ListRequ
 				return
 			}
 		}
-		resp.Diagnostics.AddAttributeError(
-			elementPath,
-			"Invalid Value Used",
-			fmt.Sprintf("Value must be one of: %s", strings.Join(v.values, ", ")),
-		)
+		msg := fmt.Sprintf("Value must be one of: %s", strings.Join(v.values, ", "))
+		tflog.Error(ctx, fmt.Sprintf("Attribute validation failed\n\nError: %s\nAttribute: %s",
+			msg, elementPath.String()), map[string]interface{}{
+			"error":               msg,
+			"attribute":           elementPath.String(),
+			"internal_error_code": plugin.ERR_VALIDATOR_ENUM_STRINGLIST,
+		})
+		resp.Diagnostics.AddAttributeError(elementPath, "Invalid Value Used", msg)
 	}
 }

@@ -2,17 +2,18 @@ package datasources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
+	"reflect"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/validators"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/data"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/validators"
 )
 
 // ensure implementation satisfied expected interfaces.
@@ -21,26 +22,14 @@ var (
 	_ datasource.DataSourceWithConfigure = &Sites{}
 )
 
-// apiSitesModel defines the API model for a list of sites.
-type apiSitesModel struct {
-	AllSites apiAllSitesModel `json:"all_sites"`
-	Sites    []apiSiteModel   `json:"sites"`
+// tfSites defines the Terraform model for sites.
+type tfSites struct {
+	Sites  []tfSite       `tfsdk:"sites"`
+	Filter *tfSitesFilter `tfsdk:"filter"`
 }
 
-// apiAllSitesModel defines the API model for metadata about all sites returned in a request.
-type apiAllSitesModel struct {
-	ActiveLicenses int `json:"active_licenses"`
-	TotalLicenses  int `json:"total_licenses"`
-}
-
-// tfSitesModel defines the Terraform model for sites.
-type tfSitesModel struct {
-	Sites  []tfSiteModel       `tfsdk:"sites"`
-	Filter *tfSitesModelFilter `tfsdk:"filter"`
-}
-
-// tfSitesModelFilter defines the Terraform model for site filtering.
-type tfSitesModelFilter struct {
+// tfSitesFilter defines the Terraform model for site filtering.
+type tfSitesFilter struct {
 	AccountIds          []types.String `tfsdk:"account_ids"`
 	AccountNameContains []types.String `tfsdk:"account_name_contains"`
 	ActiveLicenses      types.Int64    `tfsdk:"active_licenses"`
@@ -74,7 +63,7 @@ func NewSites() datasource.DataSource {
 
 // Sites is a data source used to store details about sites.
 type Sites struct {
-	client *client.SingularityProvider
+	data *data.SingularityProvider
 }
 
 // Metadata returns metadata about the data source.
@@ -270,26 +259,30 @@ func (d *Sites) Schema(ctx context.Context, req datasource.SchemaRequest, resp *
 
 // Configure initializes the configuration for the data source.
 func (d *Sites) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
 	if req.ProviderData == nil {
 		return
 	}
 
-	client, ok := req.ProviderData.(*client.SingularityProvider)
+	providerData, ok := req.ProviderData.(*data.SingularityProvider)
 	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Data Type",
-			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider "+
-				"developers.", req.ProviderData),
-		)
+		expectedType := reflect.TypeOf(&data.SingularityProvider{})
+		msg := fmt.Sprintf("The provider data sent in the request does not match the type expected. This is always an "+
+			"error with the provider and should be reported to the provider developers.\n\nExpected Type: %s\nData Type "+
+			"Received Type: %T", expectedType, req.ProviderData)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"internal_error_code": plugin.ERR_DATASOURCE_SITES_CONFIGURE,
+			"expected_type":       fmt.Sprintf("%T", expectedType),
+			"received_type":       fmt.Sprintf("%T", req.ProviderData),
+		})
+		resp.Diagnostics.AddError("Unexpected Configuration Error", msg)
 		return
 	}
-	d.client = client
+	d.data = providerData
 }
 
 // Read retrieves data from the API.
 func (d *Sites) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data tfSitesModel
+	var data tfSites
 
 	// read configuration data into the model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -298,196 +291,184 @@ func (d *Sites) Read(ctx context.Context, req datasource.ReadRequest, resp *data
 	}
 
 	// construct query parameters
-	queryParams := map[string]string{}
+	queryParams := api.SiteQueryParams{}
 	if data.Filter != nil {
 		queryParams = d.queryParamsFromFilter(*data.Filter)
 	}
 
-	// find all matching sites querying for additional pages until results are exhausted
-	var sites apiSitesModel
-	for {
-		// get a page of results
-		result, diag := d.client.APIClient.Get(ctx, "/sites", queryParams)
-		resp.Diagnostics.Append(diag...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		// parse the response
-		var page apiSitesModel
-		if err := json.Unmarshal(result.Data, &page); err != nil {
-			msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
-				"Site object.\n\nError: %s", err.Error())
-			tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
-			resp.Diagnostics.AddError("API Query Failed", msg)
-			return
-		}
-		sites.Sites = append(sites.Sites, page.Sites...)
-
-		// get the next page of results until there is no next cursor
-		if result.Pagination.NextCursor == "" {
-			break
-		}
-		queryParams["cursor"] = result.Pagination.NextCursor
+	// find the matching sites
+	sites, diags := api.Client().FindSites(ctx, queryParams)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	// convert API objects into Terraform objects
-	tfsites := tfSitesModel{
+	tfsites := tfSites{
 		Filter: data.Filter,
-		Sites:  []tfSiteModel{},
+		Sites:  []tfSite{},
 	}
-	for _, site := range sites.Sites {
-		tfsites.Sites = append(tfsites.Sites, terraformSiteFromAPI(ctx, site))
+	for _, site := range sites {
+		tfsites.Sites = append(tfsites.Sites, tfSiteFromAPI(ctx, &site))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, tfsites)...)
 }
 
 // queryParamsFromFilter converts the TF filter block into API query parameters.
-func (d *Sites) queryParamsFromFilter(filter tfSitesModelFilter) map[string]string {
-	queryParams := map[string]string{}
+func (d *Sites) queryParamsFromFilter(filter tfSitesFilter) api.SiteQueryParams {
+	queryParams := api.SiteQueryParams{}
 
 	if len(filter.AccountIds) > 0 {
-		values := []string{}
+		queryParams.AccountIds = []string{}
 		for _, e := range filter.AccountIds {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.AccountIds = append(queryParams.AccountIds, e.ValueString())
 			}
 		}
-		queryParams["accountIds"] = strings.Join(values, ",")
+
 	}
 
 	if len(filter.AccountNameContains) > 0 {
-		values := []string{}
+		queryParams.AccountNameContains = []string{}
 		for _, e := range filter.AccountNameContains {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.AccountNameContains = append(queryParams.AccountNameContains, e.ValueString())
 			}
 		}
-		queryParams["accountName__contains"] = strings.Join(values, ",")
 	}
 
 	if !filter.ActiveLicenses.IsNull() && !filter.ActiveLicenses.IsUnknown() {
-		queryParams["activeLicenses"] = fmt.Sprintf("%d", filter.ActiveLicenses.ValueInt64())
+		value := filter.ActiveLicenses.ValueInt64()
+		queryParams.ActiveLicenses = &value
 	}
 
 	if !filter.AdminOnly.IsNull() && !filter.AdminOnly.IsUnknown() {
-		queryParams["adminOnly"] = fmt.Sprintf("%t", filter.AdminOnly.ValueBool())
+		value := filter.AdminOnly.ValueBool()
+		queryParams.AdminOnly = &value
 	}
 
 	if !filter.AvailableMoveSites.IsNull() && !filter.AvailableMoveSites.IsUnknown() {
-		queryParams["availableMoveSites"] = fmt.Sprintf("%t", filter.AvailableMoveSites.ValueBool())
+		value := filter.AvailableMoveSites.ValueBool()
+		queryParams.AvailableMoveSites = &value
 	}
 
 	if !filter.CreatedAt.IsNull() && !filter.CreatedAt.IsUnknown() {
-		queryParams["createdAt"] = filter.CreatedAt.ValueString()
+		value := filter.CreatedAt.ValueString()
+		queryParams.CreatedAt = &value
 	}
 
 	if !filter.Description.IsNull() && !filter.Description.IsUnknown() {
-		queryParams["description"] = filter.Description.ValueString()
+		value := filter.Description.ValueString()
+		queryParams.Description = &value
 	}
 
 	if len(filter.DescriptionContains) > 0 {
-		values := []string{}
+		queryParams.DescriptionContains = []string{}
 		for _, e := range filter.DescriptionContains {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.DescriptionContains = append(queryParams.DescriptionContains, e.ValueString())
 			}
 		}
-		queryParams["description__contains"] = strings.Join(values, ",")
 	}
 
 	if !filter.Expiration.IsNull() && !filter.Expiration.IsUnknown() {
-		queryParams["expiration"] = filter.Expiration.ValueString()
+		value := filter.Expiration.ValueString()
+		queryParams.Expiration = &value
 	}
 
 	if !filter.ExternalId.IsNull() && !filter.ExternalId.IsUnknown() {
-		queryParams["externalId"] = filter.ExternalId.ValueString()
+		value := filter.ExternalId.ValueString()
+		queryParams.ExternalId = &value
 	}
 
 	if len(filter.Features) > 0 {
-		values := []string{}
+		queryParams.Features = []string{}
 		for _, e := range filter.Features {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.Features = append(queryParams.Features, e.ValueString())
 			}
 		}
-		queryParams["features"] = strings.Join(values, ",")
 	}
 
 	if !filter.IsDefault.IsNull() && !filter.IsDefault.IsUnknown() {
-		queryParams["isDefault"] = fmt.Sprintf("%t", filter.IsDefault.ValueBool())
+		value := filter.IsDefault.ValueBool()
+		queryParams.IsDefault = &value
 	}
 
 	if len(filter.Modules) > 0 {
-		values := []string{}
+		queryParams.Modules = []string{}
 		for _, e := range filter.Modules {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.Modules = append(queryParams.Modules, e.ValueString())
 			}
 		}
-		queryParams["modules"] = strings.Join(values, ",")
 	}
 
 	if !filter.Name.IsNull() && !filter.Name.IsUnknown() {
-		queryParams["name"] = filter.Name.ValueString()
+		value := filter.Name.ValueString()
+		queryParams.Name = &value
 	}
 
 	if len(filter.NameContains) > 0 {
-		values := []string{}
+		queryParams.NameContains = []string{}
 		for _, e := range filter.NameContains {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.NameContains = append(queryParams.NameContains, e.ValueString())
 			}
 		}
-		queryParams["name__contains"] = strings.Join(values, ",")
 	}
 
 	if !filter.Query.IsNull() && !filter.Query.IsUnknown() {
-		queryParams["query"] = filter.Query.ValueString()
+		value := filter.Query.ValueString()
+		queryParams.Query = &value
 	}
 
 	if !filter.RegistrationToken.IsNull() && !filter.RegistrationToken.IsUnknown() {
-		queryParams["registrationToken"] = filter.RegistrationToken.ValueString()
+		value := filter.RegistrationToken.ValueString()
+		queryParams.RegistrationToken = &value
 	}
 
 	if len(filter.SiteIds) > 0 {
-		values := []string{}
+		queryParams.SiteIds = []string{}
 		for _, e := range filter.SiteIds {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.SiteIds = append(queryParams.SiteIds, e.ValueString())
 			}
 		}
-		queryParams["siteIds"] = strings.Join(values, ",")
 	}
 
 	if !filter.SiteType.IsNull() && !filter.SiteType.IsUnknown() {
-		queryParams["siteType"] = filter.SiteType.ValueString()
+		value := filter.SiteType.ValueString()
+		queryParams.SiteType = &value
 	}
 
 	if !filter.SortBy.IsNull() && !filter.SortBy.IsUnknown() {
-		queryParams["sortBy"] = filter.SortBy.ValueString()
+		value := filter.SortBy.ValueString()
+		queryParams.SortBy = &value
 	}
 
 	if !filter.SortOrder.IsNull() && !filter.SortOrder.IsUnknown() {
-		queryParams["sortOrder"] = filter.SortOrder.ValueString()
+		value := filter.SortOrder.ValueString()
+		queryParams.SortOrder = &value
 	}
 
 	if len(filter.States) > 0 {
-		values := []string{}
+		queryParams.States = []string{}
 		for _, e := range filter.States {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.States = append(queryParams.States, e.ValueString())
 			}
 		}
-		queryParams["states"] = strings.Join(values, ",")
 	}
 
 	if !filter.TotalLicenses.IsNull() && !filter.TotalLicenses.IsUnknown() {
-		queryParams["totalLicenses"] = fmt.Sprintf("%d", filter.TotalLicenses.ValueInt64())
+		value := filter.TotalLicenses.ValueInt64()
+		queryParams.TotalLicenses = &value
 	}
 
 	if !filter.UpdatedAt.IsNull() && !filter.UpdatedAt.IsUnknown() {
-		queryParams["updatedAt"] = filter.UpdatedAt.ValueString()
+		value := filter.UpdatedAt.ValueString()
+		queryParams.UpdatedAt = &value
 	}
 	return queryParams
 }

@@ -2,17 +2,18 @@ package datasources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
+	"reflect"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/validators"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/data"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/validators"
 )
 
 // ensure implementation satisfied expected interfaces.
@@ -21,14 +22,14 @@ var (
 	_ datasource.DataSourceWithConfigure = &Groups{}
 )
 
-// tfGroupsModel defines the Terraform model for groups.
-type tfGroupsModel struct {
-	Groups []tfGroupModel       `tfsdk:"groups"`
-	Filter *tfGroupsModelFilter `tfsdk:"filter"`
+// tfGroups defines the Terraform model for groups.
+type tfGroups struct {
+	Groups []tfGroup       `tfsdk:"groups"`
+	Filter *tfGroupsFilter `tfsdk:"filter"`
 }
 
-// tfGroupsModelFilter defines the Terraform model for group filtering.
-type tfGroupsModelFilter struct {
+// tfGroupsFilter defines the Terraform model for group filtering.
+type tfGroupsFilter struct {
 	AccountIds        []types.String `tfsdk:"account_ids"`
 	Description       types.String   `tfsdk:"description"`
 	GroupIds          []types.String `tfsdk:"group_ids"`
@@ -54,7 +55,7 @@ func NewGroups() datasource.DataSource {
 
 // Groups is a data source used to store details about groups.
 type Groups struct {
-	client *client.SingularityProvider
+	data *data.SingularityProvider
 }
 
 // Metadata returns metadata about the data source.
@@ -194,26 +195,30 @@ func (d *Groups) Schema(ctx context.Context, req datasource.SchemaRequest, resp 
 
 // Configure initializes the configuration for the data source.
 func (d *Groups) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
 	if req.ProviderData == nil {
 		return
 	}
 
-	client, ok := req.ProviderData.(*client.SingularityProvider)
+	providerData, ok := req.ProviderData.(*data.SingularityProvider)
 	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Data Type",
-			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider "+
-				"developers.", req.ProviderData),
-		)
+		expectedType := reflect.TypeOf(&data.SingularityProvider{})
+		msg := fmt.Sprintf("The provider data sent in the request does not match the type expected. This is always an "+
+			"error with the provider and should be reported to the provider developers.\n\nExpected Type: %s\nData Type "+
+			"Received Type: %T", expectedType, req.ProviderData)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"internal_error_code": plugin.ERR_DATASOURCE_GROUPS_CONFIGURE,
+			"expected_type":       fmt.Sprintf("%T", expectedType),
+			"received_type":       fmt.Sprintf("%T", req.ProviderData),
+		})
+		resp.Diagnostics.AddError("Unexpected Configuration Error", msg)
 		return
 	}
-	d.client = client
+	d.data = providerData
 }
 
 // Read retrieves data from the API.
 func (d *Groups) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data tfGroupsModel
+	var data tfGroups
 
 	// read configuration data into the model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -222,140 +227,127 @@ func (d *Groups) Read(ctx context.Context, req datasource.ReadRequest, resp *dat
 	}
 
 	// construct query parameters
-	queryParams := map[string]string{}
+	queryParams := api.GroupQueryParams{}
 	if data.Filter != nil {
 		queryParams = d.queryParamsFromFilter(*data.Filter)
 	}
 
-	// find all matching groups querying for additional pages until results are exhausted
-	var groups []apiGroupModel
-	for {
-		// get a page of results
-		result, diag := d.client.APIClient.Get(ctx, "/groups", queryParams)
-		resp.Diagnostics.Append(diag...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		// parse the response
-		var page []apiGroupModel
-		if err := json.Unmarshal(result.Data, &page); err != nil {
-			msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
-				"Group object.\n\nError: %s", err.Error())
-			tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
-			resp.Diagnostics.AddError("API Query Failed", msg)
-			return
-		}
-		groups = append(groups, page...)
-
-		// get the next page of results until there is no next cursor
-		if result.Pagination.NextCursor == "" {
-			break
-		}
-		queryParams["cursor"] = result.Pagination.NextCursor
+	// find the matching groups
+	groups, diags := api.Client().FindGroups(ctx, queryParams)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	// convert API objects into Terraform objects
-	tfgroups := tfGroupsModel{
+	tfgroups := tfGroups{
 		Filter: data.Filter,
-		Groups: []tfGroupModel{},
+		Groups: []tfGroup{},
 	}
 	for _, group := range groups {
-		tfgroups.Groups = append(tfgroups.Groups, terraformGroupFromAPI(ctx, group))
+		tfgroups.Groups = append(tfgroups.Groups, tfGroupFromAPI(ctx, &group))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, tfgroups)...)
 }
 
 // queryParamsFromFilter converts the TF filter block into API query parameters.
-func (d *Groups) queryParamsFromFilter(filter tfGroupsModelFilter) map[string]string {
-	queryParams := map[string]string{}
+func (d *Groups) queryParamsFromFilter(filter tfGroupsFilter) api.GroupQueryParams {
+	queryParams := api.GroupQueryParams{}
 
 	if len(filter.AccountIds) > 0 {
-		values := []string{}
+		queryParams.AccountIds = []string{}
 		for _, e := range filter.AccountIds {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.AccountIds = append(queryParams.AccountIds, e.ValueString())
 			}
 		}
-		queryParams["accountIds"] = strings.Join(values, ",")
 	}
 
 	if !filter.Description.IsNull() && !filter.Description.IsUnknown() {
-		queryParams["description"] = filter.Description.ValueString()
+		value := filter.Description.ValueString()
+		queryParams.Description = &value
 	}
 
 	if len(filter.GroupIds) > 0 {
-		values := []string{}
+		queryParams.GroupIds = []string{}
 		for _, e := range filter.GroupIds {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.GroupIds = append(queryParams.GroupIds, e.ValueString())
 			}
 		}
-		queryParams["groupIds"] = strings.Join(values, ",")
 	}
 
 	if !filter.IsDefault.IsNull() && !filter.IsDefault.IsUnknown() {
-		queryParams["isDefault"] = fmt.Sprintf("%t", filter.IsDefault.ValueBool())
+		value := filter.IsDefault.ValueBool()
+		queryParams.IsDefault = &value
 	}
 
 	if !filter.Name.IsNull() && !filter.Name.IsUnknown() {
-		queryParams["name"] = filter.Name.ValueString()
+		value := filter.Name.ValueString()
+		queryParams.Name = &value
 	}
 
 	if !filter.Query.IsNull() && !filter.Query.IsUnknown() {
-		queryParams["query"] = filter.Query.ValueString()
+		value := filter.Query.ValueString()
+		queryParams.Query = &value
 	}
 
 	if !filter.Rank.IsNull() && !filter.Rank.IsUnknown() {
-		queryParams["rank"] = fmt.Sprintf("%d", filter.Rank.ValueInt64())
+		value := filter.Rank.ValueInt64()
+		queryParams.Rank = &value
 	}
 
 	if !filter.RegistrationToken.IsNull() && !filter.RegistrationToken.IsUnknown() {
-		queryParams["registrationToken"] = filter.RegistrationToken.ValueString()
+		value := filter.RegistrationToken.ValueString()
+		queryParams.RegistrationToken = &value
 	}
 
 	if len(filter.SiteIds) > 0 {
-		values := []string{}
+		queryParams.SiteIds = []string{}
 		for _, e := range filter.SiteIds {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.SiteIds = append(queryParams.SiteIds, e.ValueString())
 			}
 		}
-		queryParams["siteIds"] = strings.Join(values, ",")
 	}
 
 	if !filter.SortBy.IsNull() && !filter.SortBy.IsUnknown() {
-		queryParams["sortBy"] = filter.SortBy.ValueString()
+		value := filter.SortBy.ValueString()
+		queryParams.SortBy = &value
 	}
 
 	if !filter.SortOrder.IsNull() && !filter.SortOrder.IsUnknown() {
-		queryParams["sortOrder"] = filter.SortOrder.ValueString()
+		value := filter.SortOrder.ValueString()
+		queryParams.SortOrder = &value
 	}
 
 	if len(filter.Types) > 0 {
-		values := []string{}
+		queryParams.Types = []string{}
 		for _, e := range filter.Types {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.Types = append(queryParams.Types, e.ValueString())
 			}
 		}
-		queryParams["types"] = strings.Join(values, ",")
 	}
 
 	if !filter.UpdatedAfter.IsNull() && !filter.UpdatedAfter.IsUnknown() {
-		queryParams["updatedAt__gt"] = filter.UpdatedAfter.ValueString()
+		value := filter.UpdatedAfter.ValueString()
+		queryParams.UpdatedAfter = &value
 	}
 
 	if !filter.UpdatedAtOrAfter.IsNull() && !filter.UpdatedAtOrAfter.IsUnknown() {
-		queryParams["updatedAt__gte"] = filter.UpdatedAtOrAfter.ValueString()
+		value := filter.UpdatedAtOrAfter.ValueString()
+		queryParams.UpdatedAtOrAfter = &value
 	}
 
 	if !filter.UpdatedAtOrBefore.IsNull() && !filter.UpdatedAtOrBefore.IsUnknown() {
-		queryParams["updatedAt__lte"] = filter.UpdatedAtOrBefore.ValueString()
+		value := filter.UpdatedAtOrBefore.ValueString()
+		queryParams.UpdatedAtOrBefore = &value
 	}
 
 	if !filter.UpdatedBefore.IsNull() && !filter.UpdatedBefore.IsUnknown() {
-		queryParams["updatedAt__lt"] = filter.UpdatedBefore.ValueString()
+		value := filter.UpdatedBefore.ValueString()
+		queryParams.UpdatedBefore = &value
 	}
 	return queryParams
 }

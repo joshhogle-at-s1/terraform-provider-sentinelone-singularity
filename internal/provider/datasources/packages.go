@@ -2,17 +2,18 @@ package datasources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
+	"reflect"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/validators"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/data"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/validators"
 )
 
 // ensure implementation satisfied expected interfaces.
@@ -21,14 +22,14 @@ var (
 	_ datasource.DataSourceWithConfigure = &Packages{}
 )
 
-// tfPackagesModel defines the Terraform model for packages.
-type tfPackagesModel struct {
-	Packages []tfPackageModel       `tfsdk:"packages"`
-	Filter   *tfPackagesModelFilter `tfsdk:"filter"`
+// tfPackages defines the Terraform model for packages.
+type tfPackages struct {
+	Packages []tfPackage       `tfsdk:"packages"`
+	Filter   *tfPackagesFilter `tfsdk:"filter"`
 }
 
-// tfPackagesModelFilter defines the Terraform model for package filtering.
-type tfPackagesModelFilter struct {
+// tfPackagesFilter defines the Terraform model for package filtering.
+type tfPackagesFilter struct {
 	AccountIds    []types.String `tfsdk:"account_ids"`
 	FileExtension types.String   `tfsdk:"file_extension"`
 	Ids           []types.String `tfsdk:"ids"`
@@ -54,7 +55,7 @@ func NewPackages() datasource.DataSource {
 
 // Packages is a data source used to store details about agent/update packages.
 type Packages struct {
-	client *client.SingularityProvider
+	data *data.SingularityProvider
 }
 
 // Metadata returns metadata about the data source.
@@ -236,26 +237,30 @@ func (d *Packages) Schema(ctx context.Context, req datasource.SchemaRequest, res
 
 // Configure initializes the configuration for the data source.
 func (d *Packages) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
 	if req.ProviderData == nil {
 		return
 	}
 
-	client, ok := req.ProviderData.(*client.SingularityProvider)
+	providerData, ok := req.ProviderData.(*data.SingularityProvider)
 	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Data Type",
-			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider "+
-				"developers.", req.ProviderData),
-		)
+		expectedType := reflect.TypeOf(&data.SingularityProvider{})
+		msg := fmt.Sprintf("The provider data sent in the request does not match the type expected. This is always an "+
+			"error with the provider and should be reported to the provider developers.\n\nExpected Type: %s\nData Type "+
+			"Received Type: %T", expectedType, req.ProviderData)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"internal_error_code": plugin.ERR_DATASOURCE_PACKAGES_CONFIGURE,
+			"expected_type":       fmt.Sprintf("%T", expectedType),
+			"received_type":       fmt.Sprintf("%T", req.ProviderData),
+		})
+		resp.Diagnostics.AddError("Unexpected Configuration Error", msg)
 		return
 	}
-	d.client = client
+	d.data = providerData
 }
 
 // Read retrieves data from the API.
 func (d *Packages) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data tfPackagesModel
+	var data tfPackages
 
 	// read configuration data into the model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -264,160 +269,138 @@ func (d *Packages) Read(ctx context.Context, req datasource.ReadRequest, resp *d
 	}
 
 	// construct query parameters
-	queryParams := map[string]string{}
+	queryParams := api.PackageQueryParams{}
 	if data.Filter != nil {
 		queryParams = d.queryParamsFromFilter(*data.Filter)
 	}
 
-	// find all matching packages querying for additional pages until results are exhausted
-	var pkgs []apiPackageModel
-	for {
-		// get a page of results
-		result, diag := d.client.APIClient.Get(ctx, "/update/agent/packages", queryParams)
-		resp.Diagnostics.Append(diag...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-
-		// parse the response
-		var page []apiPackageModel
-		if err := json.Unmarshal(result.Data, &page); err != nil {
-			msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
-				"Package object.\n\nError: %s", err.Error())
-			tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
-			resp.Diagnostics.AddError("API Query Failed", msg)
-			return
-		}
-		pkgs = append(pkgs, page...)
-
-		// get the next page of results until there is no next cursor
-		if result.Pagination.NextCursor == "" {
-			break
-		}
-		queryParams["cursor"] = result.Pagination.NextCursor
+	// find the matching packages
+	pkgs, diags := api.Client().FindPackages(ctx, queryParams)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	// convert API objects into Terraform objects
-	tfpkgs := tfPackagesModel{
+	tfpkgs := tfPackages{
 		Filter:   data.Filter,
-		Packages: []tfPackageModel{},
+		Packages: []tfPackage{},
 	}
 	for _, pkg := range pkgs {
-		tfpkgs.Packages = append(tfpkgs.Packages, terraformPackageFromAPI(ctx, pkg))
+		tfpkgs.Packages = append(tfpkgs.Packages, tfPackageFromAPI(ctx, &pkg))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, tfpkgs)...)
 }
 
 // queryParamsFromFilter converts the TF filter block into API query parameters.
-func (d *Packages) queryParamsFromFilter(filter tfPackagesModelFilter) map[string]string {
-	queryParams := map[string]string{}
+func (d *Packages) queryParamsFromFilter(filter tfPackagesFilter) api.PackageQueryParams {
+	queryParams := api.PackageQueryParams{}
 
 	if len(filter.AccountIds) > 0 {
-		values := []string{}
+		queryParams.AccountIds = []string{}
 		for _, e := range filter.AccountIds {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.AccountIds = append(queryParams.AccountIds, e.ValueString())
 			}
 		}
-		queryParams["accountIds"] = strings.Join(values, ",")
 	}
 
 	if !filter.FileExtension.IsNull() && !filter.FileExtension.IsUnknown() {
-		queryParams["fileExtension"] = filter.FileExtension.ValueString()
+		value := filter.FileExtension.ValueString()
+		queryParams.FileExtension = &value
 	}
 
 	if len(filter.Ids) > 0 {
-		values := []string{}
+		queryParams.Ids = []string{}
 		for _, e := range filter.Ids {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.Ids = append(queryParams.Ids, e.ValueString())
 			}
 		}
-		queryParams["ids"] = strings.Join(values, ",")
 	}
 
 	if !filter.MinorVersion.IsNull() && !filter.MinorVersion.IsUnknown() {
-		queryParams["minorVersion"] = filter.MinorVersion.ValueString()
+		value := filter.MinorVersion.ValueString()
+		queryParams.MinorVersion = &value
 	}
 
 	if len(filter.OSArches) > 0 {
-		values := []string{}
+		queryParams.OSArches = []string{}
 		for _, e := range filter.OSArches {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.OSArches = append(queryParams.OSArches, e.ValueString())
 			}
 		}
-		queryParams["osArches"] = strings.Join(values, ",")
 	}
 
 	if len(filter.OSTypes) > 0 {
-		values := []string{}
+		queryParams.OSTypes = []string{}
 		for _, e := range filter.OSTypes {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.OSTypes = append(queryParams.OSTypes, e.ValueString())
 			}
 		}
-		queryParams["osTypes"] = strings.Join(values, ",")
 	}
 
 	if len(filter.PackageTypes) > 0 {
-		values := []string{}
+		queryParams.PackageTypes = []string{}
 		for _, e := range filter.PackageTypes {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.PackageTypes = append(queryParams.PackageTypes, e.ValueString())
 			}
 		}
-		queryParams["packageTypes"] = strings.Join(values, ",")
 	}
 
 	if len(filter.PlatformTypes) > 0 {
-		values := []string{}
+		queryParams.PlatformTypes = []string{}
 		for _, e := range filter.PlatformTypes {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.PlatformTypes = append(queryParams.PlatformTypes, e.ValueString())
 			}
 		}
-		queryParams["platformTypes"] = strings.Join(values, ",")
 	}
 
 	if !filter.RangerVersion.IsNull() && !filter.RangerVersion.IsUnknown() {
-		queryParams["rangerVersion"] = filter.RangerVersion.ValueString()
+		value := filter.RangerVersion.ValueString()
+		queryParams.RangerVersion = &value
 	}
 
 	if !filter.Sha1.IsNull() && !filter.Sha1.IsUnknown() {
-		queryParams["sha1"] = filter.Sha1.ValueString()
+		value := filter.Sha1.ValueString()
+		queryParams.Sha1 = &value
 	}
 
 	if len(filter.SiteIds) > 0 {
-		values := []string{}
+		queryParams.SiteIds = []string{}
 		for _, e := range filter.SiteIds {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.SiteIds = append(queryParams.SiteIds, e.ValueString())
 			}
 		}
-		queryParams["siteIds"] = strings.Join(values, ",")
 	}
 
 	if !filter.SortBy.IsNull() && !filter.SortBy.IsUnknown() {
-		queryParams["sortBy"] = filter.SortBy.ValueString()
+		value := filter.SortBy.ValueString()
+		queryParams.SortBy = &value
 	}
 
 	if !filter.SortOrder.IsNull() && !filter.SortOrder.IsUnknown() {
-		queryParams["sortOrder"] = filter.SortOrder.ValueString()
+		value := filter.SortOrder.ValueString()
+		queryParams.SortOrder = &value
 	}
 
 	if len(filter.Status) > 0 {
-		values := []string{}
+		queryParams.Status = []string{}
 		for _, e := range filter.Status {
 			if !e.IsNull() && !e.IsUnknown() {
-				values = append(values, e.ValueString())
+				queryParams.Status = append(queryParams.Status, e.ValueString())
 			}
 		}
-		queryParams["status"] = strings.Join(values, ",")
 	}
 
 	if !filter.Version.IsNull() && !filter.Version.IsUnknown() {
-		queryParams["version"] = filter.Version.ValueString()
+		value := filter.Version.ValueString()
+		queryParams.Version = &value
 	}
 	return queryParams
 }

@@ -12,8 +12,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/data"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/datasources"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/resources"
 )
 
 // ensure SingularityProvider satisfies various provider interfaces.
@@ -67,41 +68,47 @@ func (p *SingularityProvider) Configure(ctx context.Context, req provider.Config
 	apiToken := os.Getenv("SINGULARITY_API_TOKEN")
 	apiEndpoint := os.Getenv("SINGULARITY_API_ENDPOINT")
 
-	// read configuration into data model
-	var data SingularityProviderModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	// read configuration
+	var config SingularityProviderModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	// check required configuration variables
 	if apiToken == "" {
-		apiToken = data.ApiToken.ValueString()
+		apiToken = config.ApiToken.ValueString()
 		if apiToken == "" {
 			msg := "While configuring the provider, the API token was not found in the " +
 				"SINGULARITY_API_TOKEN environment variable nor was it defined in the " +
 				"provider configuration block's 'api_token' attribute."
-			tflog.Error(ctx, msg)
+			tflog.Error(ctx, msg, map[string]interface{}{
+				"internal_error_code": plugin.ERR_PROVIDER_CONFIGURE,
+			})
 			resp.Diagnostics.AddError("Missing API Token Configuration", msg)
 		}
 	}
 	if apiEndpoint == "" {
-		apiEndpoint = data.ApiEndpoint.ValueString()
+		apiEndpoint = config.ApiEndpoint.ValueString()
 		if apiEndpoint == "" {
 			msg := "While configuring the provider, the API endpoint was not found in the " +
 				"SINGULARITY_API_ENDPOINT environment variable nor was it defined in the " +
 				"provider configuration block's 'api_endpoint' attribute."
-			tflog.Error(ctx, msg)
+			tflog.Error(ctx, msg, map[string]interface{}{
+				"internal_error_code": plugin.ERR_PROVIDER_CONFIGURE,
+			})
 			resp.Diagnostics.AddError("Missing API Endpoint Configuration", msg)
 		}
 	}
 
 	// share the configuration with resources and data sources
-	client := &client.SingularityProvider{
-		APIClient: api.NewClient(apiToken, apiEndpoint),
-	}
-	resp.DataSourceData = client
-	resp.ResourceData = client
+	d := &data.SingularityProvider{}
+	resp.DataSourceData = d
+	resp.ResourceData = d
+
+	// initialize the global REST API client
+	api.Client().Init(apiEndpoint, apiToken)
+	tflog.Debug(ctx, "REST API client has been initialized.")
 }
 
 // DataSources defines the various data sources from which the provider can read data.
@@ -118,5 +125,7 @@ func (p *SingularityProvider) DataSources(ctx context.Context) []func() datasour
 
 // Resources defines the various resources that the provider can create.
 func (p *SingularityProvider) Resources(ctx context.Context) []func() resource.Resource {
-	return []func() resource.Resource{}
+	return []func() resource.Resource{
+		resources.NewPackageDownload,
+	}
 }

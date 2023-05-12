@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
 )
 
 // ensure implementation satisfied expected interfaces.
@@ -58,9 +60,12 @@ func (v enumString) ValidateString(ctx context.Context, req validator.StringRequ
 			return
 		}
 	}
-	resp.Diagnostics.AddAttributeError(
-		req.Path,
-		"Invalid Value Used",
-		fmt.Sprintf("Value must be one of: %s", strings.Join(v.values, ", ")),
-	)
+	msg := fmt.Sprintf("Value must be one of: %s", strings.Join(v.values, ", "))
+	tflog.Error(ctx, fmt.Sprintf("Attribute validation failed\n\nError: %s\nAttribute: %s",
+		msg, req.Path.String()), map[string]interface{}{
+		"error":               msg,
+		"attribute":           req.Path.String(),
+		"internal_error_code": plugin.ERR_VALIDATOR_ENUM_STRING,
+	})
+	resp.Diagnostics.AddAttributeError(req.Path, "Invalid Value Used", msg)
 }

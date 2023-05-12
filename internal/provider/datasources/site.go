@@ -2,14 +2,16 @@ package datasources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/data"
 )
 
 // ensure implementation satisfied expected interfaces.
@@ -18,123 +20,62 @@ var (
 	_ datasource.DataSourceWithConfigure = &Site{}
 )
 
-// apiSiteModel defines the API model for a site.
-type apiSiteModel struct {
-	AccountId           string              `json:"accountId"`
-	AccountName         string              `json:"accountName"`
-	ActiveLicenses      int                 `json:"activeLicenses"`
-	CreatedAt           string              `json:"createdAt"`
-	Creator             string              `json:"creator"`
-	CreatorId           string              `json:"creatorId"`
-	Description         string              `json:"description"`
-	Expiration          string              `json:"expiration"`
-	ExternalId          string              `json:"externalId"`
-	Id                  string              `json:"id"`
-	IsDefault           bool                `json:"isDefault"`
-	Licenses            apiSiteLicenseModel `json:"licenses"`
-	Name                string              `json:"name"`
-	RegistrationToken   string              `json:"registrationToken"`
-	SiteType            string              `json:"siteType"`
-	State               string              `json:"state"`
-	TotalLicenses       int                 `json:"totalLicenses"`
-	UnlimitedExpiration bool                `json:"unlimitedExpiration"`
-	UnlimitedLicenses   bool                `json:"unlimitedLicenses"`
-	UpdatedAt           string              `json:"updatedAt"`
+// tfSite defines the Terraform model for a site.
+type tfSite struct {
+	AccountId           types.String   `tfsdk:"account_id"`
+	AccountName         types.String   `tfsdk:"account_name"`
+	ActiveLicenses      types.Int64    `tfsdk:"active_licenses"`
+	CreatedAt           types.String   `tfsdk:"created_at"`
+	Creator             types.String   `tfsdk:"creator"`
+	CreatorId           types.String   `tfsdk:"creator_id"`
+	Description         types.String   `tfsdk:"description"`
+	Expiration          types.String   `tfsdk:"expiration"`
+	ExternalId          types.String   `tfsdk:"external_id"`
+	Id                  types.String   `tfsdk:"id"`
+	IsDefault           types.Bool     `tfsdk:"is_default"`
+	Licenses            *tfSiteLicense `tfsdk:"licenses"`
+	Name                types.String   `tfsdk:"name"`
+	RegistrationToken   types.String   `tfsdk:"registration_token"`
+	SiteType            types.String   `tfsdk:"site_type"`
+	State               types.String   `tfsdk:"state"`
+	TotalLicenses       types.Int64    `tfsdk:"total_licenses"`
+	UnlimitedExpiration types.Bool     `tfsdk:"unlimited_expiration"`
+	UnlimitedLicenses   types.Bool     `tfsdk:"unlimited_licenses"`
+	UpdatedAt           types.String   `tfsdk:"updated_at"`
 }
 
-// apiSiteLicenseModel defines the API model for a site's license.
-type apiSiteLicenseModel struct {
-	Bundles  []apiSiteLicenseBundleModel  `json:"bundles"`
-	Modules  []apiSiteLicenseModuleModel  `json:"modules"`
-	Settings []apiSiteLicenseSettingModel `json:"settings"`
+// tfSiteLicense defines the Terraform model for a site's license.
+type tfSiteLicense struct {
+	Bundles  []tfSiteLicenseBundle  `tfsdk:"bundles"`
+	Modules  []tfSiteLicenseModule  `tfsdk:"modules"`
+	Settings []tfSiteLicenseSetting `tfsdk:"settings"`
 }
 
-// apiSiteLicenseBundleModel defines the API model for a site license's bundle.
-type apiSiteLicenseBundleModel struct {
-	DisplayName   string                             `json:"displayName"`
-	MajorVersion  int                                `json:"majorVersion"`
-	MinorVersion  int                                `json:"minorVersion"`
-	Name          string                             `json:"name"`
-	Surfaces      []apiSiteLicenseBundleSurfaceModel `json:"surfaces"`
-	TotalSurfaces int                                `json:"totalSurfaces"`
+// tfSiteLicenseBundle defines the Terraform model for a site license's bundle.
+type tfSiteLicenseBundle struct {
+	DisplayName   types.String                 `tfsdk:"display_name"`
+	MajorVersion  types.Int64                  `tfsdk:"major_version"`
+	MinorVersion  types.Int64                  `tfsdk:"minor_version"`
+	Name          types.String                 `tfsdk:"name"`
+	Surfaces      []tfSiteLicenseBundleSurface `tfsdk:"surfaces"`
+	TotalSurfaces types.Int64                  `tfsdk:"total_surfaces"`
 }
 
-// apiSiteLicenseBundleSurfaceModel defines the API model for a site license bundle's surface.
-type apiSiteLicenseBundleSurfaceModel struct {
-	Count int    `json:"count"`
-	Name  string `json:"name"`
-}
-
-// apiSiteLicenseBundleSurfaceModel defines the API model for a site license's module.
-type apiSiteLicenseModuleModel struct {
-	DisplayName  string `json:"displayName"`
-	MajorVersion int    `json:"majorVersion"`
-	Name         string `json:"name"`
-}
-
-// apiSiteLicenseBundleSurfaceModel defines the API model for a site license's setting.
-type apiSiteLicenseSettingModel struct {
-	GroupName               string `json:"groupName"`
-	Setting                 string `json:"setting"`
-	SettingGroupDisplayName string `json:"settingGroupDisplayName"`
-}
-
-// tfSiteModel defines the Terraform model for a site.
-type tfSiteModel struct {
-	AccountId           types.String        `tfsdk:"account_id"`
-	AccountName         types.String        `tfsdk:"account_name"`
-	ActiveLicenses      types.Int64         `tfsdk:"active_licenses"`
-	CreatedAt           types.String        `tfsdk:"created_at"`
-	Creator             types.String        `tfsdk:"creator"`
-	CreatorId           types.String        `tfsdk:"creator_id"`
-	Description         types.String        `tfsdk:"description"`
-	Expiration          types.String        `tfsdk:"expiration"`
-	ExternalId          types.String        `tfsdk:"external_id"`
-	Id                  types.String        `tfsdk:"id"`
-	IsDefault           types.Bool          `tfsdk:"is_default"`
-	Licenses            *tfSiteLicenseModel `tfsdk:"licenses"`
-	Name                types.String        `tfsdk:"name"`
-	RegistrationToken   types.String        `tfsdk:"registration_token"`
-	SiteType            types.String        `tfsdk:"site_type"`
-	State               types.String        `tfsdk:"state"`
-	TotalLicenses       types.Int64         `tfsdk:"total_licenses"`
-	UnlimitedExpiration types.Bool          `tfsdk:"unlimited_expiration"`
-	UnlimitedLicenses   types.Bool          `tfsdk:"unlimited_licenses"`
-	UpdatedAt           types.String        `tfsdk:"updated_at"`
-}
-
-// tfSiteLicenseModel defines the Terraform model for a site's license.
-type tfSiteLicenseModel struct {
-	Bundles  []tfSiteLicenseBundleModel  `tfsdk:"bundles"`
-	Modules  []tfSiteLicenseModuleModel  `tfsdk:"modules"`
-	Settings []tfSiteLicenseSettingModel `tfsdk:"settings"`
-}
-
-// tfSiteLicenseBundleModel defines the Terraform model for a site license's bundle.
-type tfSiteLicenseBundleModel struct {
-	DisplayName   types.String                      `tfsdk:"display_name"`
-	MajorVersion  types.Int64                       `tfsdk:"major_version"`
-	MinorVersion  types.Int64                       `tfsdk:"minor_version"`
-	Name          types.String                      `tfsdk:"name"`
-	Surfaces      []tfSiteLicenseBundleSurfaceModel `tfsdk:"surfaces"`
-	TotalSurfaces types.Int64                       `tfsdk:"total_surfaces"`
-}
-
-// tfSiteLicenseBundleSurfaceModel defines the Terraform model for a site license bundle's surface.
-type tfSiteLicenseBundleSurfaceModel struct {
+// tfSiteLicenseBundleSurface defines the Terraform model for a site license bundle's surface.
+type tfSiteLicenseBundleSurface struct {
 	Count types.Int64  `tfsdk:"count"`
 	Name  types.String `tfsdk:"name"`
 }
 
-// tfSiteLicenseBundleSurfaceModel defines the Terraform model for a site license's module.
-type tfSiteLicenseModuleModel struct {
+// tfSiteLicenseBundleSurface defines the Terraform model for a site license's module.
+type tfSiteLicenseModule struct {
 	DisplayName  types.String `tfsdk:"display_name"`
 	MajorVersion types.Int64  `tfsdk:"major_version"`
 	Name         types.String `tfsdk:"name"`
 }
 
-// tfSiteLicenseBundleSurfaceModel defines the Terraform model for a site license's setting.
-type tfSiteLicenseSettingModel struct {
+// tfSiteLicenseBundleSurface defines the Terraform model for a site license's setting.
+type tfSiteLicenseSetting struct {
 	GroupName               types.String `tfsdk:"group_name"`
 	Setting                 types.String `tfsdk:"setting"`
 	SettingGroupDisplayName types.String `tfsdk:"setting_group_display_name"`
@@ -147,7 +88,7 @@ func NewSite() datasource.DataSource {
 
 // Site is a data source used to store details about a single site.
 type Site struct {
-	client *client.SingularityProvider
+	data *data.SingularityProvider
 }
 
 // Metadata returns metadata about the data source.
@@ -170,26 +111,30 @@ func (d *Site) Schema(ctx context.Context, req datasource.SchemaRequest, resp *d
 
 // Configure initializes the configuration for the data source.
 func (d *Site) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
 	if req.ProviderData == nil {
 		return
 	}
 
-	client, ok := req.ProviderData.(*client.SingularityProvider)
+	providerData, ok := req.ProviderData.(*data.SingularityProvider)
 	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Data Type",
-			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider "+
-				"developers.", req.ProviderData),
-		)
+		expectedType := reflect.TypeOf(&data.SingularityProvider{})
+		msg := fmt.Sprintf("The provider data sent in the request does not match the type expected. This is always an "+
+			"error with the provider and should be reported to the provider developers.\n\nExpected Type: %s\nData Type "+
+			"Received Type: %T", expectedType, req.ProviderData)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"internal_error_code": plugin.ERR_DATASOURCE_SITE_CONFIGURE,
+			"expected_type":       fmt.Sprintf("%T", expectedType),
+			"received_type":       fmt.Sprintf("%T", req.ProviderData),
+		})
+		resp.Diagnostics.AddError("Unexpected Configuration Error", msg)
 		return
 	}
-	d.client = client
+	d.data = providerData
 }
 
 // Read retrieves data from the API.
 func (d *Site) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data tfSiteModel
+	var data tfSite
 
 	// read configuration data into the model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -197,43 +142,15 @@ func (d *Site) Read(ctx context.Context, req datasource.ReadRequest, resp *datas
 		return
 	}
 
-	// construct query parameters
-	queryParams := map[string]string{
-		"siteIds": data.Id.ValueString(), // 'id' is required so no need to check
-	}
-
 	// find the matching site
-	result, diag := d.client.APIClient.Get(ctx, "/sites", queryParams)
-	resp.Diagnostics.Append(diag...)
+	site, diags := api.Client().GetSite(ctx, data.Id.ValueString())
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// parse the response - we are expecting exactly 1 site to be returned
-	numSites := result.Pagination.TotalItems
-	if numSites == 0 {
-		msg := "No matching site was found. Try expanding your search or check that your site ID is valid."
-		tflog.Error(ctx, msg, map[string]interface{}{"sites_found": numSites})
-		resp.Diagnostics.AddError("API Query Failed", msg)
-		return
-	} else if numSites > 1 {
-		msg := fmt.Sprintf("This data source expects 1 matching site but %d were found. Please narrow your search.",
-			numSites)
-		tflog.Error(ctx, msg, map[string]interface{}{"sites_found": numSites})
-		resp.Diagnostics.AddError("API Query Failed", msg)
-		return
-	}
-	var sites apiSitesModel
-	if err := json.Unmarshal(result.Data, &sites); err != nil {
-		msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
-			"Site object.\n\nError: %s", err.Error())
-		tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
-		resp.Diagnostics.AddError("API Query Failed", msg)
-		return
-	}
-
 	// convert the API object to the Terraform object
-	resp.Diagnostics.Append(resp.State.Set(ctx, terraformSiteFromAPI(ctx, sites.Sites[0]))...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, tfSiteFromAPI(ctx, site))...)
 }
 
 // getSiteSchema returns a default Terraform schema where all values are computed.
@@ -449,9 +366,9 @@ func getSiteSchema(ctx context.Context) schema.Schema {
 	}
 }
 
-// terraformSiteFromAPI converts an API site into a Terraform site.
-func terraformSiteFromAPI(ctx context.Context, site apiSiteModel) tfSiteModel {
-	tfsite := tfSiteModel{
+// tfSiteFromAPI converts an API site into a Terraform site.
+func tfSiteFromAPI(ctx context.Context, site *api.Site) tfSite {
+	tfsite := tfSite{
 		AccountId:           types.StringValue(site.AccountId),
 		AccountName:         types.StringValue(site.AccountName),
 		ActiveLicenses:      types.Int64Value(int64(site.ActiveLicenses)),
@@ -472,22 +389,22 @@ func terraformSiteFromAPI(ctx context.Context, site apiSiteModel) tfSiteModel {
 		UnlimitedLicenses:   types.BoolValue(site.UnlimitedLicenses),
 		UpdatedAt:           types.StringValue(site.UpdatedAt),
 	}
-	tfsite.Licenses = &tfSiteLicenseModel{
-		Bundles:  []tfSiteLicenseBundleModel{},
-		Modules:  []tfSiteLicenseModuleModel{},
-		Settings: []tfSiteLicenseSettingModel{},
+	tfsite.Licenses = &tfSiteLicense{
+		Bundles:  []tfSiteLicenseBundle{},
+		Modules:  []tfSiteLicenseModule{},
+		Settings: []tfSiteLicenseSetting{},
 	}
 	for _, bundle := range site.Licenses.Bundles {
-		b := tfSiteLicenseBundleModel{
+		b := tfSiteLicenseBundle{
 			DisplayName:   types.StringValue(bundle.DisplayName),
 			MajorVersion:  types.Int64Value(int64(bundle.MajorVersion)),
 			MinorVersion:  types.Int64Value(int64(bundle.MinorVersion)),
 			Name:          types.StringValue(bundle.Name),
-			Surfaces:      []tfSiteLicenseBundleSurfaceModel{},
+			Surfaces:      []tfSiteLicenseBundleSurface{},
 			TotalSurfaces: types.Int64Value(int64(bundle.TotalSurfaces)),
 		}
 		for _, surface := range bundle.Surfaces {
-			b.Surfaces = append(b.Surfaces, tfSiteLicenseBundleSurfaceModel{
+			b.Surfaces = append(b.Surfaces, tfSiteLicenseBundleSurface{
 				Count: types.Int64Value(int64(surface.Count)),
 				Name:  types.StringValue(surface.Name),
 			})
@@ -495,20 +412,20 @@ func terraformSiteFromAPI(ctx context.Context, site apiSiteModel) tfSiteModel {
 		tfsite.Licenses.Bundles = append(tfsite.Licenses.Bundles, b)
 	}
 	for _, module := range site.Licenses.Modules {
-		tfsite.Licenses.Modules = append(tfsite.Licenses.Modules, tfSiteLicenseModuleModel{
+		tfsite.Licenses.Modules = append(tfsite.Licenses.Modules, tfSiteLicenseModule{
 			DisplayName:  types.StringValue(module.DisplayName),
 			MajorVersion: types.Int64Value(int64(module.MajorVersion)),
 			Name:         types.StringValue(module.Name),
 		})
 	}
 	for _, setting := range site.Licenses.Settings {
-		tfsite.Licenses.Settings = append(tfsite.Licenses.Settings, tfSiteLicenseSettingModel{
+		tfsite.Licenses.Settings = append(tfsite.Licenses.Settings, tfSiteLicenseSetting{
 			GroupName:               types.StringValue(setting.GroupName),
 			Setting:                 types.StringValue(setting.Setting),
 			SettingGroupDisplayName: types.StringValue(setting.SettingGroupDisplayName),
 		})
 	}
-	tflog.Trace(ctx, fmt.Sprintf("converted API site to TF site: %+v", tfsite), map[string]interface{}{
+	tflog.Debug(ctx, fmt.Sprintf("converted API site to TF site: %+v", tfsite), map[string]interface{}{
 		"api_site": site,
 	})
 	return tfsite

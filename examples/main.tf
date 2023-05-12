@@ -37,12 +37,13 @@ data "singularity_groups" "dest" {
   }
 }
 
-/*
 resource "singularity_package_download" "k8s_agent" {
-  package_id = data.singularity_packages.k8s.packages[0].id
-  local_path =
+  package_id   = data.singularity_packages.k8s.packages[0].id
+  site_id      = data.singularity_sites.dest.sites[0].id
+  local_folder = "this/that/theother"
 }
 
+/*
 resource "singularity_docker_local_image" "k8s_agent" {
   source = singularity_package_download.k8s_agent.local_path
   platform = "x86_64|arm64"

@@ -2,14 +2,16 @@ package datasources
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
-	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/client"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/data"
 )
 
 // ensure implementation satisfied expected interfaces.
@@ -18,28 +20,8 @@ var (
 	_ datasource.DataSourceWithConfigure = &Group{}
 )
 
-// apiGroupModel defines the API model for a group.
-type apiGroupModel struct {
-	CreatedAt         string `json:"createdAt"`
-	Creator           string `json:"creator"`
-	CreatorId         string `json:"creatorId"`
-	Description       string `json:"description"`
-	FilterId          string `json:"filterId"`
-	FilterName        string `json:"filterName"`
-	Id                string `json:"id"`
-	Inherits          bool   `json:"inherits"`
-	IsDefault         bool   `json:"isDefault"`
-	Name              string `json:"name"`
-	Rank              int    `json:"rank"`
-	RegistrationToken string `json:"registrationToken"`
-	SiteId            string `json:"siteId"`
-	TotalAgents       int    `json:"totalAgents"`
-	Type              string `json:"type"`
-	UpdatedAt         string `json:"updatedAt"`
-}
-
-// tfGroupModel defines the Terraform model for a group.
-type tfGroupModel struct {
+// tfGroup defines the Terraform model for a group.
+type tfGroup struct {
 	CreatedAt         types.String `tfsdk:"created_at"`
 	Creator           types.String `tfsdk:"creator"`
 	CreatorId         types.String `tfsdk:"creator_id"`
@@ -65,7 +47,7 @@ func NewGroup() datasource.DataSource {
 
 // Group is a data source used to store details about a single group.
 type Group struct {
-	client *client.SingularityProvider
+	data *data.SingularityProvider
 }
 
 // Metadata returns metadata about the data source.
@@ -88,26 +70,30 @@ func (d *Group) Schema(ctx context.Context, req datasource.SchemaRequest, resp *
 
 // Configure initializes the configuration for the data source.
 func (d *Group) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
-	// Prevent panic if the provider has not been configured.
 	if req.ProviderData == nil {
 		return
 	}
 
-	client, ok := req.ProviderData.(*client.SingularityProvider)
+	providerData, ok := req.ProviderData.(*data.SingularityProvider)
 	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Data Type",
-			fmt.Sprintf("Expected *client.SingularityProvider, got: %T. Please report this issue to the provider "+
-				"developers.", req.ProviderData),
-		)
+		expectedType := reflect.TypeOf(&data.SingularityProvider{})
+		msg := fmt.Sprintf("The provider data sent in the request does not match the type expected. This is always an "+
+			"error with the provider and should be reported to the provider developers.\n\nExpected Type: %s\nData Type "+
+			"Received Type: %T", expectedType, req.ProviderData)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"internal_error_code": plugin.ERR_DATASOURCE_GROUP_CONFIGURE,
+			"expected_type":       fmt.Sprintf("%T", expectedType),
+			"received_type":       fmt.Sprintf("%T", req.ProviderData),
+		})
+		resp.Diagnostics.AddError("Unexpected Configuration Error", msg)
 		return
 	}
-	d.client = client
+	d.data = providerData
 }
 
 // Read retrieves data from the API.
 func (d *Group) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data tfGroupModel
+	var data tfGroup
 
 	// read configuration data into the model
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -115,43 +101,15 @@ func (d *Group) Read(ctx context.Context, req datasource.ReadRequest, resp *data
 		return
 	}
 
-	// construct query parameters
-	queryParams := map[string]string{
-		"groupIds": data.Id.ValueString(), // 'id' is required so no need to check
-	}
-
 	// find the matching group
-	result, diag := d.client.APIClient.Get(ctx, "/groups", queryParams)
-	resp.Diagnostics.Append(diag...)
+	group, diags := api.Client().GetGroup(ctx, data.Id.ValueString())
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// parse the response - we are expecting exactly 1 group to be returned
-	numGroups := result.Pagination.TotalItems
-	if numGroups == 0 {
-		msg := "No matching group was found. Try expanding your search or check that your group ID is valid."
-		tflog.Error(ctx, msg, map[string]interface{}{"groups_found": numGroups})
-		resp.Diagnostics.AddError("API Query Failed", msg)
-		return
-	} else if numGroups > 1 {
-		msg := fmt.Sprintf("This data source expects 1 matching group but %d were found. Please narrow your search.",
-			numGroups)
-		tflog.Error(ctx, msg, map[string]interface{}{"groups_found": numGroups})
-		resp.Diagnostics.AddError("API Query Failed", msg)
-		return
-	}
-	var groups []apiGroupModel
-	if err := json.Unmarshal(result.Data, &groups); err != nil {
-		msg := fmt.Sprintf("An unexpected error occurred while parsing the response from the API Server into a "+
-			"Group object.\n\nError: %s", err.Error())
-		tflog.Error(ctx, msg, map[string]interface{}{"error": err.Error()})
-		resp.Diagnostics.AddError("API Query Failed", msg)
-		return
-	}
-
 	// convert the API object to the Terraform object
-	resp.Diagnostics.Append(resp.State.Set(ctx, terraformGroupFromAPI(ctx, groups[0]))...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, tfGroupFromAPI(ctx, group))...)
 }
 
 // getGroupSchema returns a default Terraform schema where all values are computed.
@@ -244,9 +202,9 @@ func getGroupSchema(ctx context.Context) schema.Schema {
 	}
 }
 
-// terraformGroupFromAPI converts an API group into a Terraform group.
-func terraformGroupFromAPI(ctx context.Context, group apiGroupModel) tfGroupModel {
-	return tfGroupModel{
+// tfGroupFromAPI converts an API group into a Terraform group.
+func tfGroupFromAPI(ctx context.Context, group *api.Group) tfGroup {
+	tfgroup := tfGroup{
 		CreatedAt:         types.StringValue(group.CreatedAt),
 		Creator:           types.StringValue(group.Creator),
 		CreatorId:         types.StringValue(group.CreatorId),
@@ -264,4 +222,8 @@ func terraformGroupFromAPI(ctx context.Context, group apiGroupModel) tfGroupMode
 		Type:              types.StringValue(group.Type),
 		UpdatedAt:         types.StringValue(group.UpdatedAt),
 	}
+	tflog.Debug(ctx, fmt.Sprintf("converted API group to TF group: %+v", tfgroup), map[string]interface{}{
+		"api_group": group,
+	})
+	return tfgroup
 }

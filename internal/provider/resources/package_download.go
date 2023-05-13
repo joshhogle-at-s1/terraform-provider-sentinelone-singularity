@@ -5,23 +5,28 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
+	"runtime"
 
+	tfpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/api"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/plugin"
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/data"
+	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/validators"
 )
 
-// ensure implementation satisfied expected interfaces.
+// ensure implementation satisfied expected interfaces
 var (
 	_ resource.Resource              = &PackageDownload{}
 	_ resource.ResourceWithConfigure = &PackageDownload{}
@@ -68,36 +73,37 @@ func (r *PackageDownload) Schema(ctx context.Context, req resource.SchemaRequest
 		Attributes: map[string]schema.Attribute{
 			"directory_mode": schema.StringAttribute{
 				Description: "The permissions to set on any folders created when saving the file. " +
-					"Changing this value has no effect on existing folders. [Default: 0755]",
+					"Changing this value has no effect on existing folders. Ignored on Windows. [Default: 0755]",
 				MarkdownDescription: "The permissions to set on any folders created when saving the file. " +
-					"Changing this value has no effect on existing folders. [Default: 0755]",
+					"Changing this value has no effect on existing folders. Ignored on Windows. [Default: 0755]",
 				Optional: true,
 				Computed: true,
 				Default:  stringdefault.StaticString("0755"),
+				Validators: []validator.String{
+					validators.FileModeIsValid(),
+				},
 			},
 			"file_mode": schema.StringAttribute{
-				Description:         "The permissions to set on the file once it has been downloaded. [Default: 0644]",
-				MarkdownDescription: "The permissions to set on the file once it has been downloaded. [Default: 0644]",
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("0644"),
+				Description: "The permissions to set on the file once it has been downloaded. Ignored on Windows. " +
+					"[Default: 0644]",
+				MarkdownDescription: "The permissions to set on the file once it has been downloaded. Ignored on Windows. " +
+					"[Default: 0644]",
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString("0644"),
+				Validators: []validator.String{
+					validators.FileModeIsValid(),
+				},
 			},
 			"file_size": schema.Int64Attribute{
 				Description:         "The size of the package file that was downloaded.",
 				MarkdownDescription: "The size of the package file that was downloaded.",
 				Computed:            true,
-				PlanModifiers: []planmodifier.Int64{
-					r.requiresPackageSizeUpdate(),
-					int64planmodifier.RequiresReplace(),
-				},
 			},
 			"local_filename": schema.StringAttribute{
-				Description: "Rename the downloaded package file using this name instead of keeping the original package " +
-					"file name. [Default: name of the original package file from the server]",
-				MarkdownDescription: "Rename the downloaded package file using this name instead of keeping the original " +
-					"package file name. [Default: name of the original package file from the server]",
-				Optional: true,
-				Computed: true,
+				Description:         "The name of the file to save the downloaded package as.",
+				MarkdownDescription: "The name of the file to save the downloaded package as.",
+				Required:            true,
 			},
 			"local_folder": schema.StringAttribute{
 				Description: "The full path to the folder in which to store the downloaded package. Use absolute " +
@@ -131,10 +137,6 @@ func (r *PackageDownload) Schema(ctx context.Context, req resource.SchemaRequest
 				Description:         "The SHA1 checksum of the package file that was downloaded.",
 				MarkdownDescription: "The SHA1 checksum of the package file that was downloaded.",
 				Computed:            true,
-				PlanModifiers: []planmodifier.String{
-					r.requiresPackageSHA1Update(),
-					stringplanmodifier.RequiresReplace(),
-				},
 			},
 			"site_id": schema.StringAttribute{
 				Description:         "The ID of the site in which the package can be found.",
@@ -162,7 +164,7 @@ func (r *PackageDownload) Configure(ctx context.Context, req resource.ConfigureR
 			"error with the provider and should be reported to the provider developers.\n\nExpected Type: %s\nData Type "+
 			"Received Type: %T", expectedType, req.ProviderData)
 		tflog.Error(ctx, msg, map[string]interface{}{
-			"internal_error_code": plugin.ERR_DATASOURCE_GROUP_CONFIGURE,
+			"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_CONFIGURE,
 			"expected_type":       fmt.Sprintf("%T", expectedType),
 			"received_type":       fmt.Sprintf("%T", req.ProviderData),
 		})
@@ -170,6 +172,49 @@ func (r *PackageDownload) Configure(ctx context.Context, req resource.ConfigureR
 		return
 	}
 	r.data = providerData
+}
+
+// ModifyPlan is called to modify the Terraform plan.
+func (r *PackageDownload) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest,
+	resp *resource.ModifyPlanResponse) {
+
+	// retrieve values from plan and state
+	var packageId, sha1 types.String
+	var fileSize types.Int64
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, tfpath.Root("package_id"), &packageId)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, tfpath.Root("file_size"), &fileSize)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, tfpath.Root("sha1"), &sha1)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// we need to do some extra work here regarding the SHA1 and size checks - otherwise if the file is
+	// replaced, no changes will be detected
+	if !packageId.IsNull() && !packageId.IsUnknown() &&
+		!fileSize.IsNull() && !fileSize.IsUnknown() && !sha1.IsNull() && !sha1.IsUnknown() {
+		// refresh package data
+		pkg, diags := api.Client().GetPackage(ctx, packageId.ValueString())
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// compare API file size and SHA1 with state
+		if pkg.FileSize != fileSize.ValueInt64() {
+			resp.RequiresReplace.Append(tfpath.Root("file_size"))
+			resp.Plan.SetAttribute(ctx, tfpath.Root("file_size"), types.Int64Value(pkg.FileSize))
+		}
+		if pkg.SHA1 != sha1.ValueString() {
+			resp.RequiresReplace.Append(tfpath.Root("sha1"))
+			resp.Plan.SetAttribute(ctx, tfpath.Root("sha1"), types.StringValue(pkg.SHA1))
+		}
+	}
 }
 
 // Create is used to create the Terraform resource.
@@ -192,11 +237,6 @@ func (r *PackageDownload) Create(ctx context.Context, req resource.CreateRequest
 	plan.FileSize = types.Int64Value(pkg.FileSize)
 	plan.SHA1 = types.StringValue(pkg.SHA1)
 
-	// set default values in plan if not provided
-	if plan.LocalFilename.IsNull() || plan.LocalFilename.IsUnknown() {
-		plan.LocalFilename = types.StringValue(pkg.FileName)
-	}
-
 	// download the package file
 	fileSize, sha1, diags := api.Client().DownloadPackage(ctx, packageId, siteId,
 		path.Join(plan.LocalFolder.ValueString(), plan.LocalFilename.ValueString()),
@@ -214,8 +254,9 @@ func (r *PackageDownload) Create(ctx context.Context, req resource.CreateRequest
 		tflog.Error(ctx, msg, map[string]interface{}{
 			"downloaded_package_size": fileSize,
 			"expected_package_size":   pkg.FileSize,
+			"internal_error_code":     plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_CREATE,
 		})
-		resp.Diagnostics.AddError("Download Package Failure", msg)
+		resp.Diagnostics.AddError("Download Package Creation Error", msg)
 		return
 	}
 	if sha1 != pkg.SHA1 {
@@ -224,8 +265,9 @@ func (r *PackageDownload) Create(ctx context.Context, req resource.CreateRequest
 		tflog.Error(ctx, msg, map[string]interface{}{
 			"downloaded_package_sha1": sha1,
 			"expected_package_sha1":   pkg.SHA1,
+			"internal_error_code":     plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_CREATE,
 		})
-		resp.Diagnostics.AddError("Download Package Failure", msg)
+		resp.Diagnostics.AddError("Download Package Creation Error", msg)
 		return
 	}
 
@@ -246,35 +288,57 @@ func (r *PackageDownload) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// refresh data about the downloaded file
-	filePath := path.Join(state.LocalFolder.ValueString(), state.LocalFilename.ValueString())
-	fileInfo, err := os.Stat(filePath)
+	// convert path to absolute
+	absPath, diags := plugin.ToAbsolutePath(ctx, path.Join(state.LocalFolder.ValueString(),
+		state.LocalFilename.ValueString()))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// gather information about the package file
+	fileInfo, err := os.Stat(absPath)
 	if os.IsNotExist(err) {
 		tflog.Debug(ctx, "Package file no longer exists on the local system.", map[string]interface{}{
-			"file": filePath,
+			"file": absPath,
 		})
 		resp.State.RemoveResource(ctx)
 		return
 	} else if err != nil {
 		msg := fmt.Sprintf("An unexpected error occurred while trying to get information on the downloaded "+
-			"package file.\n\nError: %s\nFile: %s", err.Error(), filePath)
+			"package file.\n\nError: %s\nFile: %s", err.Error(), absPath)
 		tflog.Error(ctx, msg, map[string]interface{}{
-			"error": err.Error(),
-			"file":  filePath,
+			"error":               err.Error(),
+			"file":                absPath,
+			"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_READ,
 		})
-		resp.Diagnostics.AddError("Download Package Refresh Failed", msg)
+		resp.Diagnostics.AddError("Download Package Refresh Error", msg)
 		return
+	} else if fileInfo.IsDir() {
+		err = fmt.Errorf("the file path given is actually a folder")
+		msg := fmt.Sprintf("An unexpected error occurred while trying to get information on the downloaded "+
+			"package file.\n\nError: %s\nFile: %s", err.Error(), absPath)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"error":               err.Error(),
+			"file":                absPath,
+			"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_READ,
+		})
+		resp.Diagnostics.AddError("Download Package Refresh Error", msg)
 	}
-	state.FileMode = types.StringValue(fmt.Sprintf("%04o", fileInfo.Mode()))
+
+	// update state values
+	if runtime.GOOS != "windows" { // we only care about file mode on non-windows systems
+		state.FileMode = types.StringValue(fmt.Sprintf("%04o", fileInfo.Mode()))
+	}
 	state.FileSize = types.Int64Value(fileInfo.Size())
-	sha1, diags := plugin.GetFileSHA1(ctx, filePath)
+	sha1, diags := plugin.GetFileSHA1(ctx, absPath)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	state.SHA1 = types.StringValue(sha1)
 
-	// set refreshed state
+	// save refreshed state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -283,134 +347,179 @@ func (r *PackageDownload) Read(ctx context.Context, req resource.ReadRequest, re
 
 // Update modifies the Terraform resource in place without destroying it.
 func (r *PackageDownload) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	tflog.Info(ctx, "PackageDownload: updating resource")
+	// retrieve values from state
+	var state tfPackageDownload
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
+	// retrieve values from plan
+	var plan tfPackageDownload
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// directory mode and overwrite flag updates require no changes locally
+	if !plan.DirectoryMode.IsNull() && !plan.DirectoryMode.IsUnknown() {
+		state.DirectoryMode = plan.DirectoryMode
+	}
+	if !plan.OverwriteExistingFile.IsNull() && !plan.OverwriteExistingFile.IsUnknown() {
+		state.OverwriteExistingFile = plan.OverwriteExistingFile
+	}
+
+	// update source/dest file paths based on state and plan
+	srcPath, diags := plugin.ToAbsolutePath(ctx, path.Join(state.LocalFolder.ValueString(),
+		state.LocalFilename.ValueString()))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	folder := state.LocalFolder.ValueString()
+	if !plan.LocalFolder.IsNull() && !plan.LocalFolder.IsUnknown() {
+		folder = plan.LocalFolder.ValueString()
+		state.LocalFolder = plan.LocalFolder
+	}
+	filename := state.LocalFilename.ValueString()
+	if !plan.LocalFilename.IsNull() && !plan.LocalFilename.IsUnknown() {
+		filename = plan.LocalFilename.ValueString()
+		state.LocalFilename = plan.LocalFilename
+	}
+	destPath, diags := plugin.ToAbsolutePath(ctx, path.Join(folder, filename))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// if filename or folder has changed, move the file
+	if srcPath != destPath {
+		// make sure the destination folder exists
+		folder, _ := filepath.Split(destPath)
+		resp.Diagnostics.Append(plugin.CreateDirectory(ctx, folder, state.DirectoryMode.ValueString())...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// move the file
+		if err := os.Rename(srcPath, destPath); err != nil {
+			msg := fmt.Sprintf("An unexpected error occurred while moving the package file.\n\n"+
+				"Error: %s\nSource: %s\nDestination: %s", err.Error(), srcPath, destPath)
+			tflog.Error(ctx, msg, map[string]interface{}{
+				"error":               err.Error(),
+				"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_UPDATE,
+				"src_path":            srcPath,
+				"dest_path":           destPath,
+			})
+			resp.Diagnostics.AddError("Download Package Update Error", msg)
+			return
+		}
+		tflog.Debug(ctx, "Moved package file", map[string]interface{}{
+			"src_path":  srcPath,
+			"dest_path": destPath,
+		})
+	}
+
+	// if file mode has changed, update the file mode
+	if !plan.FileMode.IsNull() && !plan.FileMode.IsUnknown() {
+		state.FileMode = plan.FileMode
+
+		// get the new file mode
+		newMode, diags := plugin.ParseFilesystemMode(ctx, plan.FileMode.ValueString())
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		// update the file mode
+		if err := os.Chmod(destPath, newMode); err != nil {
+			msg := fmt.Sprintf("An unexpected error occurred while changing permissions on the package file.\n\n"+
+				"Error: %s\nFile: %s\nNew Mode: %s", err.Error(), destPath, fmt.Sprintf("%04o", newMode))
+			tflog.Error(ctx, msg, map[string]interface{}{
+				"error":               err.Error(),
+				"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_UPDATE,
+				"new_mode":            fmt.Sprintf("%04o", newMode),
+			})
+			resp.Diagnostics.AddError("Download Package Update Error", msg)
+			return
+		}
+		tflog.Debug(ctx, "Updated file mode for package file", map[string]interface{}{
+			"file":     destPath,
+			"new_mode": fmt.Sprintf("%04o", newMode),
+		})
+	}
+
+	// save the the plan to the state
+	diags = resp.State.Set(ctx, state)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 }
 
 // Delete removes the Terraform resource.
 func (r *PackageDownload) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	tflog.Info(ctx, "PackageDownload: deleting resource")
-
-}
-
-// requiresPackageSizeUpdate returns the plan modifier for updating the package size.
-func (r *PackageDownload) requiresPackageSizeUpdate() planmodifier.Int64 {
-	return requiresPackageSizeUpdate{}
-}
-
-// requiresPackageSHA1Update returns the plan modifier for updating the package file's SHA1 hash.
-func (r *PackageDownload) requiresPackageSHA1Update() planmodifier.String {
-	return requiresPackageSHA1Update{}
-}
-
-// requiresPackageSizeUpdate queries the REST API to retrieve a package's file size so it can be compared to the
-// file size on disk.
-type requiresPackageSizeUpdate struct {
-}
-
-// Description returns a human-readable description of the plan modifier.
-func (m requiresPackageSizeUpdate) Description(_ context.Context) string {
-	return "refreshes the package file size from the REST API and compares it to the existing file size"
-}
-
-// MarkdownDescription returns a markdown description of the plan modifier.
-func (m requiresPackageSizeUpdate) MarkdownDescription(_ context.Context) string {
-	return "refreshes the package file size from the REST API and compares it to the existing file size"
-}
-
-// PlanModifyInt64 implements the plan modification logic.
-func (m requiresPackageSizeUpdate) PlanModifyInt64(ctx context.Context, req planmodifier.Int64Request,
-	resp *planmodifier.Int64Response) {
-
-	// Do nothing if there is no state value.
-	if req.StateValue.IsNull() {
-		return
-	}
-
-	// Do nothing if the plan value is unknown.
-	if req.PlanValue.IsUnknown() {
-		return
-	}
-
-	// Do nothing if there is an unknown configuration value, otherwise interpolation gets messed up.
-	if req.ConfigValue.IsUnknown() {
-		return
-	}
-
-	// get the current state and configuration
+	// get the current state
 	var state tfPackageDownload
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// refresh package information from the server
-	pkg, diags := api.Client().GetPackage(ctx, state.PackageId.ValueString())
+	// if folder or filename are empty, nothing to remove
+	if state.LocalFilename.IsNull() || state.LocalFolder.IsNull() {
+		return
+	}
+
+	// convert the path to absolute
+	absPath, diags := plugin.ToAbsolutePath(ctx, path.Join(state.LocalFolder.ValueString(),
+		state.LocalFilename.ValueString()))
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	tflog.Debug(ctx, "updating plan file size", map[string]interface{}{
-		"file_size_from_state": resp.PlanValue.ValueInt64(),
-		"file_size_from_api":   pkg.FileSize,
+	// make sure the path is actually a file that exists
+	fileInfo, err := os.Stat(absPath)
+	if os.IsNotExist(err) {
+		// nothing to do - file no longer exists
+		return
+	} else if err != nil {
+		msg := fmt.Sprintf("An unexpected error occurred while attempting to open the package file.\n\n"+
+			"Error: %s\nFile: %s", err.Error(), absPath)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"error":               err.Error(),
+			"file":                absPath,
+			"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_DELETE,
+		})
+		resp.Diagnostics.AddError("Download Package Removal Error", msg)
+		return
+	}
+	if fileInfo.IsDir() {
+		err := fmt.Errorf("the destination path is a directory, not a file")
+		msg := fmt.Sprintf("An unexpected error occurred while attempting to remove the package file.\n\n"+
+			"Error: %s\nFile: %s", err.Error(), absPath)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"error":               err.Error(),
+			"file":                absPath,
+			"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_DELETE,
+		})
+		resp.Diagnostics.AddError("Download Package Removal Error", msg)
+		return
+	}
+
+	// remove the file
+	if err := os.Remove(absPath); err != nil {
+		msg := fmt.Sprintf("An unexpected error occurred while removing the package file.\n\nError: %s\nFile: %s",
+			err.Error(), absPath)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"error":               err.Error(),
+			"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_DELETE,
+		})
+		resp.Diagnostics.AddError("Download Package Removal Error", msg)
+		return
+	}
+	tflog.Debug(ctx, "Removed package file", map[string]interface{}{
+		"file": absPath,
 	})
-	resp.PlanValue = types.Int64Value(pkg.FileSize)
-}
-
-// requiresPackageSHA1Update queries the REST API to retrieve a package file's SHA1 checksum so it can be compared to
-// the SHA1 checksum of the file on disk.
-type requiresPackageSHA1Update struct {
-}
-
-// Description returns a human-readable description of the plan modifier.
-func (m requiresPackageSHA1Update) Description(_ context.Context) string {
-	return "refreshes the package file's SHA1 checksum from the REST API and compares it to the SHA1 checksum of " +
-		"the file on disk"
-}
-
-// MarkdownDescription returns a markdown description of the plan modifier.
-func (m requiresPackageSHA1Update) MarkdownDescription(_ context.Context) string {
-	return "refreshes the package file's SHA1 checksum from the REST API and compares it to the SHA1 checksum of " +
-		"the file on disk"
-}
-
-// PlanModifyInt64 implements the plan modification logic.
-func (m requiresPackageSHA1Update) PlanModifyString(ctx context.Context, req planmodifier.StringRequest,
-	resp *planmodifier.StringResponse) {
-
-	// Do nothing if there is no state value.
-	if req.StateValue.IsNull() {
-		return
-	}
-
-	// Do nothing if the plan value is unknown.
-	if req.PlanValue.IsUnknown() {
-		return
-	}
-
-	// Do nothing if there is an unknown configuration value, otherwise interpolation gets messed up.
-	if req.ConfigValue.IsUnknown() {
-		return
-	}
-
-	// get the current state and configuration
-	var state tfPackageDownload
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// refresh package information from the server
-	pkg, diags := api.Client().GetPackage(ctx, state.PackageId.ValueString())
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	tflog.Debug(ctx, "updating plan file SHA1", map[string]interface{}{
-		"file_sha1_from_state": resp.PlanValue.ValueString(),
-		"file_sha1_from_api":   pkg.SHA1,
-	})
-	resp.PlanValue = types.StringValue(pkg.SHA1)
 }

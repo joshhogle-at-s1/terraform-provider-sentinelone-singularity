@@ -14,7 +14,7 @@ import (
 	"github.com/joshhogle-at-s1/terraform-provider-sentinelone-singularity/internal/provider/data"
 )
 
-// ensure implementation satisfied expected interfaces.
+// ensure implementation satisfied expected interfaces
 var (
 	_ datasource.DataSource              = &Group{}
 	_ datasource.DataSourceWithConfigure = &Group{}

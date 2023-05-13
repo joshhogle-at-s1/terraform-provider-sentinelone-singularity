@@ -15,6 +15,35 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
+// CreateDirectory creates the given path along with any parent directories setting the permissions using the
+// given permissions mode.
+func CreateDirectory(ctx context.Context, path, mode string) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	// create the destination folder if it does not exist
+	folderExists, diags := PathExists(ctx, path)
+	if diags.HasError() {
+		return diags
+	}
+	if !folderExists {
+		fsmode, diags := ParseFilesystemMode(ctx, mode)
+		if diags.HasError() {
+			return diags
+		}
+		if err := os.MkdirAll(path, fsmode); err != nil {
+			msg := fmt.Sprintf("An unexpected error occurred while creating one or more folders in the path.\n\n"+
+				"Error: %s\nPath: %s", err.Error(), path)
+			tflog.Error(ctx, msg, map[string]interface{}{
+				"error":               err.Error(),
+				"internal_error_code": ERR_UTIL_CREATE_DIRECTORY,
+			})
+			diags.AddError("Unexpected Internal Error", msg)
+			return diags
+		}
+	}
+	return diags
+}
+
 // CreateFile creates a new file (or truncates an existing file) at the given path and opens it for writing.
 //
 // Any parent folders are automatically created for you with the given folder mode. When the file is created, its
@@ -22,8 +51,6 @@ import (
 //
 // If overwrite is false, an existing file will not be overwritten and an error will occur.
 func CreateFile(ctx context.Context, path, folderMode, fileMode string, overwrite bool) (*os.File, diag.Diagnostics) {
-	var diags diag.Diagnostics
-
 	// convert the path to an absolute path
 	absPath, diags := ToAbsolutePath(ctx, path)
 	if diags.HasError() {
@@ -34,25 +61,9 @@ func CreateFile(ctx context.Context, path, folderMode, fileMode string, overwrit
 	ctx = tflog.SetField(ctx, "file", file)
 
 	// create the destination folder if it does not exist
-	folderExists, diags := PathExists(ctx, folder)
+	diags = CreateDirectory(ctx, folder, folderMode)
 	if diags.HasError() {
 		return nil, diags
-	}
-	if !folderExists {
-		fsmode, diags := ParseFilesystemMode(ctx, folderMode)
-		if diags.HasError() {
-			return nil, diags
-		}
-		if err := os.MkdirAll(folder, fsmode); err != nil {
-			msg := fmt.Sprintf("An unexpected error occurred while creating one or more parent folders for the "+
-				"given file.\n\nError: %s\nParent Folder: %s\nFile: %s", err.Error(), folder, file)
-			tflog.Error(ctx, msg, map[string]interface{}{
-				"error":               err.Error(),
-				"internal_error_code": ERR_UTIL_CREATE_FILE,
-			})
-			diags.AddError("Unexpected Internal Error", msg)
-			return nil, diags
-		}
 	}
 
 	// check to see if file exists
@@ -158,7 +169,7 @@ func GetWorkDir() string {
 	return cwd
 }
 
-// PathExists determines whether or not the given path exists.
+// PathExists determines whether or not the given path exists. The path may be a folder or a file.
 //
 // If an error occurs, the function returns false with an error in the diag.Diagnostics object.
 func PathExists(ctx context.Context, path string) (bool, diag.Diagnostics) {

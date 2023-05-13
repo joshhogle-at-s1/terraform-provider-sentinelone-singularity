@@ -38,9 +38,10 @@ data "singularity_groups" "dest" {
 }
 
 resource "singularity_package_download" "k8s_agent" {
-  package_id   = data.singularity_packages.k8s.packages[0].id
-  site_id      = data.singularity_sites.dest.sites[0].id
-  local_folder = "this/that/theother"
+  package_id     = data.singularity_packages.k8s.packages[0].id
+  site_id        = data.singularity_sites.dest.sites[0].id
+  local_folder   = pathexpand("~/.singularity/packages")
+  local_filename = data.singularity_packages.k8s.packages[0].file_name
 }
 
 /*

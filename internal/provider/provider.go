@@ -31,6 +31,8 @@ type SingularityProviderModel struct {
 
 // SingularityProvider defines the provider implementation.
 type SingularityProvider struct {
+	// NOTE: we do not have the REST API client here because in certain cases it is needed before it is available
+	//       to data sources / resources so a globally accessible singleton is used instead.
 }
 
 // New creates a new instance of the provider.
@@ -41,7 +43,9 @@ func New() func() provider.Provider {
 }
 
 // Metadata returns metadata about the provider.
-func (p *SingularityProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
+func (p *SingularityProvider) Metadata(ctx context.Context, req provider.MetadataRequest,
+	resp *provider.MetadataResponse) {
+
 	resp.TypeName = plugin.PROVIDER_NAME
 	resp.Version = plugin.Version
 }
@@ -63,8 +67,10 @@ func (p *SingularityProvider) Schema(ctx context.Context, req provider.SchemaReq
 }
 
 // Configure initializes the configuration for the provider.
-func (p *SingularityProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-	// check environment variables
+func (p *SingularityProvider) Configure(ctx context.Context, req provider.ConfigureRequest,
+	resp *provider.ConfigureResponse) {
+
+	// environment variables take precedence over configuration variables
 	apiToken := os.Getenv("SINGULARITY_API_TOKEN")
 	apiEndpoint := os.Getenv("SINGULARITY_API_ENDPOINT")
 
@@ -74,31 +80,31 @@ func (p *SingularityProvider) Configure(ctx context.Context, req provider.Config
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	// check required configuration variables
 	if apiToken == "" {
 		apiToken = config.ApiToken.ValueString()
-		if apiToken == "" {
-			msg := "While configuring the provider, the API token was not found in the " +
-				"SINGULARITY_API_TOKEN environment variable nor was it defined in the " +
-				"provider configuration block's 'api_token' attribute."
-			tflog.Error(ctx, msg, map[string]interface{}{
-				"internal_error_code": plugin.ERR_PROVIDER_CONFIGURE,
-			})
-			resp.Diagnostics.AddError("Missing API Token Configuration", msg)
-		}
 	}
 	if apiEndpoint == "" {
 		apiEndpoint = config.ApiEndpoint.ValueString()
-		if apiEndpoint == "" {
-			msg := "While configuring the provider, the API endpoint was not found in the " +
-				"SINGULARITY_API_ENDPOINT environment variable nor was it defined in the " +
-				"provider configuration block's 'api_endpoint' attribute."
-			tflog.Error(ctx, msg, map[string]interface{}{
-				"internal_error_code": plugin.ERR_PROVIDER_CONFIGURE,
-			})
-			resp.Diagnostics.AddError("Missing API Endpoint Configuration", msg)
-		}
+	}
+
+	// check required configuration variables
+	if apiToken == "" {
+		msg := "While configuring the provider, the API token was not found in the " +
+			"SINGULARITY_API_TOKEN environment variable nor was it defined in the " +
+			"provider configuration block's 'api_token' attribute."
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"internal_error_code": plugin.ERR_PROVIDER_CONFIGURE,
+		})
+		resp.Diagnostics.AddError("Missing API Token Configuration", msg)
+	}
+	if apiEndpoint == "" {
+		msg := "While configuring the provider, the API endpoint was not found in the " +
+			"SINGULARITY_API_ENDPOINT environment variable nor was it defined in the " +
+			"provider configuration block's 'api_endpoint' attribute."
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"internal_error_code": plugin.ERR_PROVIDER_CONFIGURE,
+		})
+		resp.Diagnostics.AddError("Missing API Endpoint Configuration", msg)
 	}
 
 	// share the configuration with resources and data sources
@@ -106,7 +112,9 @@ func (p *SingularityProvider) Configure(ctx context.Context, req provider.Config
 	resp.DataSourceData = d
 	resp.ResourceData = d
 
-	// initialize the global REST API client
+	// initialize the global REST API client singleton
+	// NOTE: we are not storing the API client in the provider because in some instances the client may be needed before
+	//       the provider data is available to the specific data source or resource
 	api.Client().Init(apiEndpoint, apiToken)
 	tflog.Debug(ctx, "REST API client has been initialized.")
 }
@@ -126,6 +134,7 @@ func (p *SingularityProvider) DataSources(ctx context.Context) []func() datasour
 // Resources defines the various resources that the provider can create.
 func (p *SingularityProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
+		resources.NewK8sAgentPackageLoader,
 		resources.NewPackageDownload,
 	}
 }

@@ -40,31 +40,38 @@ data "singularity_groups" "dest" {
 resource "singularity_package_download" "k8s_agent" {
   package_id     = data.singularity_packages.k8s.packages[0].id
   site_id        = data.singularity_sites.dest.sites[0].id
-  local_folder   = pathexpand("~/.singularity/packages")
+  local_folder   = pathexpand("~/.singularity/packages/k8s")
   local_filename = data.singularity_packages.k8s.packages[0].file_name
 }
 
 /*
-resource "singularity_docker_local_image" "k8s_agent" {
-  source = singularity_package_download.k8s_agent.local_path
-  platform = "x86_64|arm64"
-}
-
 resource "github_repository" "singularity_agent" {
 
 }
+*/
 
-resource "singularity_docker_registry_image" "k8s_helper" {
-  local_docker_image =
+resource "singularity_k8s_agent_package_loader" "k8s_agent" {
+  package_file       = singularity_package_download.k8s_agent.output_file
+  docker_host        = "unix:///Users/joshhogle/.rd/docker.sock"
+  docker_api_version = null
+  docker_cert_path   = null
+  docker_tls_verify  = false
 
-  registry_url =
-  registry_username =
-  registry_password =
-  registry_image_name = 
-  registry_tag =
-
+  /*
+  remote_registry_image {
+    
+    platforms         = ["arm64", "amd64"]
+    images            = ["agent", "helper"]
+    hostname          = "ghcr.io"
+    credential_helper = "none"
+    repo_path         = joshhogle-at-s1 / cwpp-k8s-agent / helper
+    image_tag         = singularity_package_download.k8s_agent.version
+   
+  }
+  */
 }
 
+/*
 resource "kubernetes_secret" "registry_creds" {
 
 }

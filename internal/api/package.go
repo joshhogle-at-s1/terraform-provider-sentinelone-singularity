@@ -48,6 +48,59 @@ type packageSite struct {
 	Name string `json:"name"`
 }
 
+// DownloadPackage is responsible for downloading the package with the given ID to a local path.
+func (c *client) DownloadPackage(ctx context.Context, id, siteId, path, folderMode, fileMode string,
+	overwrite bool) (string, int64, string, string, diag.Diagnostics) {
+
+	// convert the path to an absolute path
+	absPath, diags := plugin.ToAbsolutePath(ctx, path)
+	if diags.HasError() {
+		return "", 0, "", "", diags
+	}
+	ctx = tflog.SetField(ctx, "file", absPath)
+
+	// create the file for writing
+	outfile, diags := plugin.CreateFile(ctx, absPath, folderMode, fileMode, overwrite)
+	if diags.HasError() {
+		return "", 0, "", "", diags
+	}
+
+	// stream the download package into the output file
+	diags = c.GetStream(ctx, fmt.Sprintf("/update/agent/download/%s/%s", siteId, id), map[string]string{},
+		outfile)
+	if diags.HasError() {
+		return "", 0, "", "", diags
+	}
+	outfile.Close()
+
+	// get the SHA1 and size of the destination file
+	fileInfo, err := os.Stat(absPath)
+	if err != nil {
+		msg := fmt.Sprintf("An unexpected error occurred while retrieving information about the package file.\n\n"+
+			"Error: %s\nFile: %s", err.Error(), absPath)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"error":               err.Error(),
+			"internal_error_code": plugin.ERR_API_PACKAGE_DOWNLOAD_PACKAGE,
+		})
+		diags.AddError("Unexpected Internal Error", msg)
+		os.Remove(absPath)
+		return "", 0, "", "", diags
+	}
+	sha1, diags := plugin.GetFileSHA1(ctx, absPath)
+	if diags.HasError() {
+		os.Remove(absPath)
+		return "", 0, "", "", diags
+	}
+
+	// finally get the version of the downloaded package
+	pkg, diags := c.GetPackage(ctx, id)
+	if diags.HasError() {
+		os.Remove(absPath)
+		return "", 0, "", "", diags
+	}
+	return absPath, fileInfo.Size(), sha1, pkg.Version, diags
+}
+
 // FindPackages returns a list of packages found based on the given query parameters.
 func (c *client) FindPackages(ctx context.Context, queryParams PackageQueryParams) ([]Package, diag.Diagnostics) {
 	var pkgs []Package
@@ -81,50 +134,6 @@ func (c *client) FindPackages(ctx context.Context, queryParams PackageQueryParam
 		getQueryParams["cursor"] = result.Pagination.NextCursor
 	}
 	return pkgs, diags
-}
-
-// DownloadPackage is responsible for downloading the package with the given ID to a local path.
-func (c *client) DownloadPackage(ctx context.Context, id, siteId, path, folderMode, fileMode string,
-	overwrite bool) (int64, string, diag.Diagnostics) {
-
-	// convert the path to an absolute path
-	absPath, diags := plugin.ToAbsolutePath(ctx, path)
-	if diags.HasError() {
-		return 0, "", diags
-	}
-	ctx = tflog.SetField(ctx, "file", absPath)
-
-	// create the file for writing
-	outfile, diags := plugin.CreateFile(ctx, absPath, folderMode, fileMode, overwrite)
-	if diags.HasError() {
-		return 0, "", diags
-	}
-
-	// stream the download package into the output file
-	diags = c.GetStream(ctx, fmt.Sprintf("/update/agent/download/%s/%s", siteId, id), map[string]string{},
-		outfile)
-	if diags.HasError() {
-		return 0, "", diags
-	}
-	outfile.Close()
-
-	// get the SHA1 and size of the destination file
-	fileInfo, err := os.Stat(absPath)
-	if err != nil {
-		msg := fmt.Sprintf("An unexpected error occurred while retrieving information about the package file.\n\n"+
-			"Error: %s\nFile: %s", err.Error(), absPath)
-		tflog.Error(ctx, msg, map[string]interface{}{
-			"error":               err.Error(),
-			"internal_error_code": plugin.ERR_API_PACKAGE_DOWNLOAD_PACKAGE,
-		})
-		diags.AddError("Unexpected Internal Error", msg)
-		return 0, "", diags
-	}
-	sha1, diags := plugin.GetFileSHA1(ctx, absPath)
-	if diags.HasError() {
-		return 0, "", diags
-	}
-	return fileInfo.Size(), sha1, diags
 }
 
 // GetPackage returns the package with the matching ID.

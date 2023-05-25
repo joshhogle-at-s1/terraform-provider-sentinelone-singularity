@@ -169,6 +169,25 @@ func GetWorkDir() string {
 	return cwd
 }
 
+// ParseFilesystemMode converts a filesystem mode string into the corresponding octal mode.
+func ParseFilesystemMode(ctx context.Context, mode string) (fs.FileMode, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	fsmode, err := strconv.ParseUint(mode, 8, 32)
+	if err != nil {
+		msg := fmt.Sprintf("An unexpected error occurred while parsing the given filesystem mode string.\n\n"+
+			"Error: %s\nMode: %s", err.Error(), mode)
+		tflog.Error(ctx, msg, map[string]interface{}{
+			"error":               err.Error(),
+			"mode":                mode,
+			"internal_error_code": ERR_UTIL_PARSE_FILESYSTEM_MODE,
+		})
+		diags.AddError("Unexpected Internal Error", msg)
+		return 0, diags
+	}
+	return fs.FileMode(fsmode), diags
+}
+
 // PathExists determines whether or not the given path exists. The path may be a folder or a file.
 //
 // If an error occurs, the function returns false with an error in the diag.Diagnostics object.
@@ -195,25 +214,6 @@ func PathExists(ctx context.Context, path string) (bool, diag.Diagnostics) {
 		diags.AddError("Unexpected Internal Error", msg)
 	}
 	return true, diags
-}
-
-// ParseFilesystemMode converts a filesystem mode string into the corresponding octal mode.
-func ParseFilesystemMode(ctx context.Context, mode string) (fs.FileMode, diag.Diagnostics) {
-	var diags diag.Diagnostics
-
-	fsmode, err := strconv.ParseUint(mode, 8, 32)
-	if err != nil {
-		msg := fmt.Sprintf("An unexpected error occurred while parsing the given filesystem mode string.\n\n"+
-			"Error: %s\nMode: %s", err.Error(), mode)
-		tflog.Error(ctx, msg, map[string]interface{}{
-			"error":               err.Error(),
-			"mode":                mode,
-			"internal_error_code": ERR_UTIL_PARSE_FILESYSTEM_MODE,
-		})
-		diags.AddError("Unexpected Internal Error", msg)
-		return 0, diags
-	}
-	return fs.FileMode(fsmode), diags
 }
 
 // ToAbsolutePath converts the given path to an absolute path if it's not already an absolute path.

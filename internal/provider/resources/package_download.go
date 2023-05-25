@@ -39,18 +39,20 @@ type tfPackageDownload struct {
 	FileSize              types.Int64  `tfsdk:"file_size"`
 	LocalFilename         types.String `tfsdk:"local_filename"`
 	LocalFolder           types.String `tfsdk:"local_folder"`
+	OutputFile            types.String `tfsdk:"output_file"`
 	OverwriteExistingFile types.Bool   `tfsdk:"overwrite_existing_file"`
 	PackageId             types.String `tfsdk:"package_id"`
 	SHA1                  types.String `tfsdk:"sha1"`
 	SiteId                types.String `tfsdk:"site_id"`
+	Version               types.String `tfsdk:"version"`
 }
 
-// NewPackageDownload creates a new PacakgeDownload object.
+// NewPackageDownload creates a new PackageDownload object.
 func NewPackageDownload() resource.Resource {
 	return &PackageDownload{}
 }
 
-// PackageDownload is a resource used to store details about an update/agent package that has been downloaded locally.
+// PackageDownload is a resource used to download update/agent packages using the API.
 type PackageDownload struct {
 	data *data.SingularityProvider
 }
@@ -63,9 +65,9 @@ func (r *PackageDownload) Metadata(ctx context.Context, req resource.MetadataReq
 // Schema defines the parameters for the data sources's configuration.
 func (r *PackageDownload) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "This resource is used for downloading an update/agent package from the server and saving it " +
+		Description: "This resource is used for downloading an update/agent package from the server and saving it	" +
 			"locally.",
-		MarkdownDescription: `resource is used for downloading an update/agent package from the server and saving it 
+		MarkdownDescription: `This resource is used for downloading an update/agent package from the server and saving it
 			locally.
 
 		TODO: add more of a description on how to use this data source...
@@ -75,7 +77,7 @@ func (r *PackageDownload) Schema(ctx context.Context, req resource.SchemaRequest
 				Description: "The permissions to set on any folders created when saving the file. " +
 					"Changing this value has no effect on existing folders. Ignored on Windows. [Default: 0755]",
 				MarkdownDescription: "The permissions to set on any folders created when saving the file. " +
-					"Changing this value has no effect on existing folders. Ignored on Windows. [Default: 0755]",
+					"Changing this value has no effect on existing folders. Ignored on Windows. [Default: `0755`]",
 				Optional: true,
 				Computed: true,
 				Default:  stringdefault.StaticString("0755"),
@@ -87,7 +89,7 @@ func (r *PackageDownload) Schema(ctx context.Context, req resource.SchemaRequest
 				Description: "The permissions to set on the file once it has been downloaded. Ignored on Windows. " +
 					"[Default: 0644]",
 				MarkdownDescription: "The permissions to set on the file once it has been downloaded. Ignored on Windows. " +
-					"[Default: 0644]",
+					"[Default: `0644`]",
 				Optional: true,
 				Computed: true,
 				Default:  stringdefault.StaticString("0644"),
@@ -116,11 +118,16 @@ func (r *PackageDownload) Schema(ctx context.Context, req resource.SchemaRequest
 				Computed: true,
 				Default:  stringdefault.StaticString(plugin.GetWorkDir()),
 			},
+			"output_file": schema.StringAttribute{
+				Description:         "The absolute path of the downloaded file once it has been saved.",
+				MarkdownDescription: "The absolute path of the downloaded file once it has been saved.",
+				Computed:            true,
+			},
 			"overwrite_existing_file": schema.BoolAttribute{
 				Description: "Whether or not to overwrite any existing file with the same name in the same " +
 					"folder. [Default: true]",
 				MarkdownDescription: "Whether or not to overwrite any existing file with the same name in the same " +
-					"folder. [Default: true]",
+					"folder. [Default: `true`]",
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(true),
@@ -146,6 +153,11 @@ func (r *PackageDownload) Schema(ctx context.Context, req resource.SchemaRequest
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
+			"version": schema.StringAttribute{
+				Description:         "The version of the downloaded package file.",
+				MarkdownDescription: "The version of the downloaded package file.",
+				Computed:            true,
+			},
 		},
 	}
 }
@@ -162,7 +174,7 @@ func (r *PackageDownload) Configure(ctx context.Context, req resource.ConfigureR
 		expectedType := reflect.TypeOf(&data.SingularityProvider{})
 		msg := fmt.Sprintf("The provider data sent in the request does not match the type expected. This is always an "+
 			"error with the provider and should be reported to the provider developers.\n\nExpected Type: %s\nData Type "+
-			"Received Type: %T", expectedType, req.ProviderData)
+			"Received: %T", expectedType, req.ProviderData)
 		tflog.Error(ctx, msg, map[string]interface{}{
 			"internal_error_code": plugin.ERR_RESOURCE_PACKAGE_DOWNLOAD_CONFIGURE,
 			"expected_type":       fmt.Sprintf("%T", expectedType),
@@ -238,7 +250,7 @@ func (r *PackageDownload) Create(ctx context.Context, req resource.CreateRequest
 	plan.SHA1 = types.StringValue(pkg.SHA1)
 
 	// download the package file
-	fileSize, sha1, diags := api.Client().DownloadPackage(ctx, packageId, siteId,
+	outputFile, fileSize, sha1, version, diags := api.Client().DownloadPackage(ctx, packageId, siteId,
 		path.Join(plan.LocalFolder.ValueString(), plan.LocalFilename.ValueString()),
 		plan.DirectoryMode.ValueString(), plan.FileMode.ValueString(),
 		plan.OverwriteExistingFile.ValueBool())
@@ -246,6 +258,8 @@ func (r *PackageDownload) Create(ctx context.Context, req resource.CreateRequest
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	plan.OutputFile = types.StringValue(outputFile)
+	plan.Version = types.StringValue(version)
 
 	// compare the downloaded file size and SHA1 to make sure they match what are expected
 	if fileSize != pkg.FileSize {
@@ -288,15 +302,16 @@ func (r *PackageDownload) Read(ctx context.Context, req resource.ReadRequest, re
 		return
 	}
 
-	// convert path to absolute
-	absPath, diags := plugin.ToAbsolutePath(ctx, path.Join(state.LocalFolder.ValueString(),
-		state.LocalFilename.ValueString()))
+	// get the version from the API
+	pkg, diags := api.Client().GetPackage(ctx, state.PackageId.ValueString())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	state.Version = types.StringValue(pkg.Version)
 
 	// gather information about the package file
+	absPath := state.OutputFile.ValueString()
 	fileInfo, err := os.Stat(absPath)
 	if os.IsNotExist(err) {
 		tflog.Debug(ctx, "Package file no longer exists on the local system.", map[string]interface{}{
@@ -370,12 +385,7 @@ func (r *PackageDownload) Update(ctx context.Context, req resource.UpdateRequest
 	}
 
 	// update source/dest file paths based on state and plan
-	srcPath, diags := plugin.ToAbsolutePath(ctx, path.Join(state.LocalFolder.ValueString(),
-		state.LocalFilename.ValueString()))
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	srcPath := state.OutputFile.ValueString()
 	folder := state.LocalFolder.ValueString()
 	if !plan.LocalFolder.IsNull() && !plan.LocalFolder.IsUnknown() {
 		folder = plan.LocalFolder.ValueString()
@@ -394,6 +404,8 @@ func (r *PackageDownload) Update(ctx context.Context, req resource.UpdateRequest
 
 	// if filename or folder has changed, move the file
 	if srcPath != destPath {
+		state.OutputFile = types.StringValue(destPath)
+
 		// make sure the destination folder exists
 		folder, _ := filepath.Split(destPath)
 		resp.Diagnostics.Append(plugin.CreateDirectory(ctx, folder, state.DirectoryMode.ValueString())...)
@@ -466,18 +478,11 @@ func (r *PackageDownload) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 
-	// if folder or filename are empty, nothing to remove
-	if state.LocalFilename.IsNull() || state.LocalFolder.IsNull() {
+	// if output file is empty, nothing to remove
+	if state.OutputFile.IsNull() {
 		return
 	}
-
-	// convert the path to absolute
-	absPath, diags := plugin.ToAbsolutePath(ctx, path.Join(state.LocalFolder.ValueString(),
-		state.LocalFilename.ValueString()))
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	absPath := state.OutputFile.ValueString()
 
 	// make sure the path is actually a file that exists
 	fileInfo, err := os.Stat(absPath)

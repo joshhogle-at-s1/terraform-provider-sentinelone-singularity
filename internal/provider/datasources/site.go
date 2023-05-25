@@ -120,7 +120,7 @@ func (d *Site) Configure(ctx context.Context, req datasource.ConfigureRequest, r
 		expectedType := reflect.TypeOf(&data.SingularityProvider{})
 		msg := fmt.Sprintf("The provider data sent in the request does not match the type expected. This is always an "+
 			"error with the provider and should be reported to the provider developers.\n\nExpected Type: %s\nData Type "+
-			"Received Type: %T", expectedType, req.ProviderData)
+			"Received: %T", expectedType, req.ProviderData)
 		tflog.Error(ctx, msg, map[string]interface{}{
 			"internal_error_code": plugin.ERR_DATASOURCE_SITE_CONFIGURE,
 			"expected_type":       fmt.Sprintf("%T", expectedType),
